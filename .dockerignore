@@ -1,0 +1,10 @@
+.git
+.env*
+__pycache__
+tests
+docs
+*.xlsx
+*.pdf
+*.docx
+private
+data

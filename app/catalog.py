@@ -58,12 +58,14 @@ DETAIL_FIELDS.update({'campus_id': ('ID Campus', 'contact'),
 
 VIEWS=[
  {'id':'summary','title':'Resumen','description':'Indicadores sobre los registros de la copia local.'},
- {'id':'base','title':'Base de aspirantes','description':'Una fila por oportunidad, con ciclo y campos verificados.'},
+ {'id':'base','title':'Oportunidades','description':'Una fila por oportunidad, con ciclo y campos verificados.'},
+ {'id':'contacts','title':'Aspirantes','description':'Personas y datos académicos vinculados a la cartera.'},
+ {'id':'registration','title':'Inscripciones a prueba','description':'Seguimiento comercial de las inscripciones a prueba.'},
  {'id':'tests','title':'Pruebas y convocatorias','description':'PDA/PAA, convocatoria, fecha y resolución leídas del detalle.'},
  {'id':'interviews','title':'Entrevistas y citas','description':'Indicador de entrevista y actividades vinculadas consultadas.'},
- {'id':'payments','title':'Pagos y matrícula','description':'Importe y campos de seguimiento; no acredita un pago.'},
+ {'id':'payments','title':'Pagos y reservas','description':'Importe y campos de seguimiento; no acredita un pago.'},
  {'id':'financial','title':'Asistencia económica','description':'Solicitud y estado visibles en Oracle.'},
- {'id':'enrollment','title':'Matrícula comercial','description':'Etapas 05 y 06; pendiente conciliación con Campus.'},
+ {'id':'enrollment','title':'Matrícula','description':'Etapas 05 y 06; pendiente conciliación con Campus.'},
  {'id':'changes','title':'Cambios en Oracle','description':'Envío, conflictos y confirmación de los cambios solicitados.'},
  {'id':'sync','title':'Sincronización','description':'Frecuencia, frescura y estado del trabajador.'},
  {'id':'roadmap','title':'Roadmap','description':'Evolución operativa e inteligencia de negocio futura.'}

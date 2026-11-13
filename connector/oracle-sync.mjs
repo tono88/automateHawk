@@ -217,8 +217,8 @@ export function readLinkedActivities() {
   });return {queried:true,rows};
 }
 
-export async function collectOpportunityDetail(adapter,number) {
-  await configureQuery(adapter);
+export async function collectOpportunityDetail(adapter,number,{reuseQuery=false}={}) {
+  if(!reuseQuery)await configureQuery(adapter);
   adapter.phase='select_record';await selectOpportunityByNumber(adapter,number);
   adapter.phase='open_detail';await openCachedDetail(adapter,number);
   adapter.phase='capture_detail';const payload=await captureOpenDetail(adapter,number);

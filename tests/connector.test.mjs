@@ -32,3 +32,15 @@ test('uses the opportunity header when an earlier panel has another table',()=>{
     assert.equal(normalizeGrid(readOpportunityGrid())[0].opportunity_number,'SYNTHETIC-001');
   } finally {globalThis.document=previous;}
 });
+
+
+import {decodeExport} from '../connector/export-codec.mjs';
+test('keeps Spanish accents and symbols from UTF-8 and legacy export encodings',()=>{
+ const text='<meta charset="utf-8"><p>Prueba sintética: Muñoz, María, §, 25 %</p>';
+ assert.equal(decodeExport(Buffer.from(text,'utf8')),text);
+ const legacy='<meta charset="windows-1252"><p>Muñoz y María</p>';
+ assert.equal(decodeExport(Buffer.from(legacy,'latin1')),legacy);
+ assert.equal(decodeExport(Buffer.from('Muñoz','latin1')),'Muñoz');
+ assert.throws(()=>decodeExport(Buffer.from('<meta charset="utf-8">Muñoz','latin1')));
+ assert.throws(()=>decodeExport(Buffer.from('<meta charset="unsupported">')));
+});

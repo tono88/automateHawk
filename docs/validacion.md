@@ -30,7 +30,7 @@ El laboratorio publica su puerto solo en loopback. La puesta en producción exig
 
 ## Vistas y lectura ampliada
 
-Comprobadas las 26 opciones del selector Vistas del Excel, el orden ascendente y descendente por número oficial, la paginación y las opciones de cantidad de filas, incluida Todas. Las pruebas automáticas cubren orden numérico/fecha, valores vacíos, límites de página, estructura de vistas, actualización de versiones de extracción y restricciones de permisos.
+Las vistas operativas se integran por proceso; las jornadas se seleccionan dentro de Pruebas y convocatorias. Comprobados el orden ascendente y descendente por número oficial, la paginación y las opciones de cantidad de filas, incluida Todas. Las pruebas automáticas cubren orden numérico/fecha, valores vacíos, límites de página, estructura de vistas, actualización de versiones de extracción y restricciones de permisos.
 
 El recorrido de lectura abre la oportunidad por número oficial, consulta el diagnóstico y asistencia económica, revisa actividades y abre el perfil del contacto principal desde la relación Contactos. Se verificó el retorno mediante Cancelar, sin guardar cambios. La estructura ampliada admite campos de contacto, resultados y un segundo tipo de asistencia. Cada registro informa su versión de extracción para reanudar cargas anteriores.
 

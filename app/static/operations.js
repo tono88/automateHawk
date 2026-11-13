@@ -2,15 +2,15 @@
 window.UnisOracleLive = (() => {
   let state, catalog, changes = [], root, view = 'base', query = '', cycle = '', advisor = '',
     stage = '', faculty = '', testDate = '', page = 1, selected = null, module = 'general',
-    inline = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, workbookView = 'Resumen';
+    inline = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, cohort = '';
   const labels = {name:'Nombre de oportunidad',owner:'Asesor',stage:'Etapa',probability:'Probabilidad',close_date:'Fecha de cierre'};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const time = value => value ? new Date(value).toLocaleString('es-GT', {timeZone:'America/Guatemala'}) : 'Sin consultar';
   const rawValue = (row, key) => row[key] ?? state.details?.[row.opportunity_number]?.fields?.[key] ?? '';
-  const value = (row,key) => window.UnisWorkbookViews.derive(row,key,rawValue,state);
+  const value = (row,key) => window.UnisAdmissionsViews.derive(row,key,rawValue,state);
   function fieldHint(row,key) {
     if(key in row || key in (state.details?.[row.opportunity_number]?.fields||{}))return 'Sin valor registrado en Oracle';
-    const hint=window.UnisWorkbookViews.fields[key]?.[1];
+    const hint=window.UnisAdmissionsViews.fields[key]?.[1];
     if(hint&&/pendiente|no localizada|no se recopilan/.test(hint))return hint;
     if(state.details?.[row.opportunity_number]?.schema_version!==2&&hint)return 'Extracción ampliada pendiente: '+hint;
     return state.details?.[row.opportunity_number]?'Campo no disponible en la pantalla consultada de este registro':'Detalle pendiente de actualización';
@@ -42,7 +42,6 @@ window.UnisOracleLive = (() => {
       if(term && ![row.opportunity_number,row.name,row.first_name,row.last_name,row.owner,row.account,value(row,'career'),value(row,'campus_id')].join(' ').toLocaleLowerCase('es').includes(term)) return false;
       if(faculty && value(row,'faculty')!==faculty)return false;
       if(cycle && value(row,'cycle')!==cycle || advisor && row.owner!==advisor || stage && row.stage!==stage || testDate && value(row,'test_date')!==testDate) return false;
-      if(view==='enrollment' && !/^(05|06)\s*-/.test(row.stage)) return false;
       return true;
     });
   }
@@ -50,18 +49,18 @@ window.UnisOracleLive = (() => {
     if(!window.HubAuth.isAuthenticated()||!root || !document.querySelector('[data-mode="live"].active')) return;
     const filtered=rows(), busy=['pending','running'].includes(state.job?.state);
     const outstanding=changes.filter(c=>['pending_validation','queued','approved','applying','uncertain'].includes(c.state)).length;
-    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">AUTOMATEHAWK · OPERACIÓN DE ADMISIONES</span><h1>La cartera, conectada.</h1><p>Cartera global, detalle por módulo y cambios verificados en Oracle.</p></div><button class="primary" id="op-sync" ${!state.worker_online||busy?'disabled':''}>${busy?'Consulta en curso…':'Actualizar desde Oracle'}</button></div>
-      <div class="source-strip"><span>${badge(state.storage==='postgresql'?'PostgreSQL · copia persistente':'Copia en memoria',state.storage==='postgresql'?'green':'orange')}</span><span>Última carga: ${esc(time(state.loaded_at))}</span><span>${state.worker_online?'Trabajador conectado':'Trabajador desconectado'}</span><span>Permisos locales: ${esc(state.role)}</span></div>
+    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">ADMISIONES · UNIS</span><h1>Admisiones, en un solo lugar.</h1><p>Aspirantes, pruebas, entrevistas y matrícula en una misma cartera.</p></div><button class="primary" id="op-sync" ${!state.worker_online||busy?'disabled':''}>${busy?'Consulta en curso…':'Actualizar desde Oracle'}</button></div>
+      <div class="source-strip"><span>${badge(state.storage==='postgresql'?'Oracle · copia local':'Copia temporal',state.storage==='postgresql'?'green':'orange')}</span><span>Última carga: ${esc(time(state.loaded_at))}</span><span>${state.worker_online?'Conexión a Oracle activa':'Conexión a Oracle pendiente'}</span><span>${state.can_propose?'Gestión habilitada según permisos':'Acceso de consulta'}</span></div>
       <p class="subtle">Consulta parcial · ${esc(state.scope)}. Los datos disponibles se muestran completos. Una raya indica un campo sin valor o pendiente de actualización; su descripción distingue cada caso.</p>
-      <div class="metrics ops-metrics"><div class="metric accent"><div class="metric-label">Oportunidades en copia local</div><strong>${state.records.length}</strong><small>Identificadas por número oficial</small></div><div class="metric"><div class="metric-label">Detalles consultados</div><strong>${state.detail_count}</strong><small>Cobertura de campos ampliados</small></div><div class="metric"><div class="metric-label">Cambios por confirmar</div><strong>${outstanding}</strong><small>Aún no confirmadas en Oracle</small></div><div class="metric"><div class="metric-label">Versiones observadas</div><strong>${state.database?.historical_versions ?? '—'}</strong><small>Historia de la copia local</small></div></div>
+      <div class="metrics ops-metrics"><div class="metric accent"><div class="metric-label">Oportunidades</div><strong>${state.records.length}</strong><small>Identificadas por número oficial</small></div><div class="metric"><div class="metric-label">Detalles disponibles</div><strong>${state.detail_count}</strong><small>Cobertura de campos ampliados</small></div><div class="metric"><div class="metric-label">Cambios por confirmar</div><strong>${outstanding}</strong><small>Aún no confirmadas en Oracle</small></div><div class="metric"><div class="metric-label">Detalles pendientes</div><strong>${Math.max(0,state.records.length-state.detail_count)}</strong><small>Por consultar o renovar acceso</small></div></div>
       <div class="detail-progress"><span>${esc(state.job?.message||'Los datos se muestran tal como se recuperaron de Oracle.')}</span><button id="op-enrich" class="tiny-button" ${!state.worker_online||busy?'disabled':''}>Completar datos de la cartera</button></div>
-      <div class="ops-tabs" aria-label="Vistas de admisiones">${[catalog.views[0],{id:'workbook',title:'Vistas del Excel'},...catalog.views.slice(1),{id:'local-activities',title:'Seguimientos y citas locales'}].map(v=>`<button data-view="${v.id}" class="${view===v.id?'selected':''}">${esc(v.title)}</button>`).join('')}</div>
+      <div class="ops-tabs module-nav" aria-label="Módulos de admisiones">${[...catalog.views,{id:'local-activities',title:'Seguimientos y citas'}].map(v=>`<button data-view="${v.id}" class="${view===v.id?'selected':''}">${esc(v.title)}</button>`).join('')}</div>
       ${error?`<div class="notice" role="alert">${esc(error)}</div>`:''}
-      ${['tests','interviews','financial'].includes(view)?coverageNote(filtered):''}${view==='workbook'?workbookPanel(filtered):view==='local-activities'?localActivityView(filtered):view==='changes'?queueView():view==='sync'?syncView():view==='roadmap'?roadmapView():view==='summary'?summaryView(filtered):tableView(filtered)}`;
+      ${view==='financial'?coverageNote(filtered):''}${['contacts','tests','registration','interviews','enrollment'].includes(view)?admissionsPanel(filtered):view==='local-activities'?localActivityView(filtered):view==='changes'?queueView():view==='sync'?syncView():view==='roadmap'?roadmapView():view==='summary'?filters()+coverageNote(filtered)+summaryView(filtered)+admissionsSummary(filtered):tableView(filtered)}`;
     root.querySelector('#op-sync').onclick=()=>enqueue('opportunities');
     root.querySelector('#op-enrich').onclick=()=>enqueue('details_batch');
     root.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{view=button.dataset.view;testDate='';page=1;sortKey='';sortDirection='asc';inline=null;error='';draw();});
-    const workbookSelect=root.querySelector('#workbook-view');if(workbookSelect)workbookSelect.onchange=e=>{workbookView=e.target.value;page=1;sortKey='';inline=null;draw();};
+    const cohortSelect=root.querySelector('#op-cohort');if(cohortSelect)cohortSelect.onchange=e=>{cohort=e.target.value;page=1;sortKey='';inline=null;draw();};
     bindTable();
     bindActivities(root);
     root.querySelectorAll('[data-cancel-change]').forEach(button=>button.onclick=async()=>{
@@ -82,7 +81,7 @@ window.UnisOracleLive = (() => {
     tests:[['cycle','Ciclo','general'],['test_call','Convocatoria','tests'],['test_date','Fecha PA','tests'],['test_type','Prueba de admisión','tests'],['test_route','Tipo de prueba','tests'],['agreement','Convenio PA','tests'],['resolution','Resolución','tests']],
     interviews:[['owner','Asesor','advisor'],['cycle','Ciclo','general'],['interview','Indicador de entrevista','interviews'],['activities','Citas y tareas vinculadas','activities'],['resolution','Resolución','tests']],
     payments:[['owner','Asesor','advisor'],['stage','Etapa','general'],['amount','Importe de oportunidad','payments'],['reservation_close','Reserva de cupo','payments'],['tuition_delay_reason','Retraso de matrícula','payments']],
-    financial:[['cycle','Ciclo','general'],['financial_aid','Asistencia económica','financial'],['financial_type_1','Tipo de ayuda','financial'],['financial_requested_1','% solicitado','financial'],['financial_granted_1','% otorgado','financial'],['financial_status','Estatus','financial'],['documents_due','Límite de papelería','financial']],
+    financial:[['financial_interest','Interés en ayuda','contact'],['financial_type_2','Tipo de ayuda 2','financial'],['financial_requested_2','% solicitado 2','financial'],['financial_granted_2','% otorgado 2','financial'],['financial_acceptance','Aceptación','financial'],['cycle','Ciclo','general'],['financial_aid','Asistencia económica','financial'],['financial_type_1','Tipo de ayuda','financial'],['financial_requested_1','% solicitado','financial'],['financial_granted_1','% otorgado','financial'],['financial_status','Estatus','financial'],['documents_due','Límite de papelería','financial']],
     enrollment:[['owner','Asesor','advisor'],['stage','Etapa comercial','general'],['cycle','Ciclo','general'],['resolution','Resolución','tests'],['reservation_close','Reserva de cupo','payments'],['close_date','Cierre comercial','general']]
   };
   function canEdit(row,key) {
@@ -238,19 +237,23 @@ window.UnisOracleLive = (() => {
   function summaryView(filtered) {
     const groups=new Map();filtered.forEach(row=>groups.set(row.stage,(groups.get(row.stage)||0)+1));
     const dates=[...new Set(filtered.map(row=>value(row,'test_date')).filter(Boolean))];
-    return `<div class="guide-grid"><section class="panel"><h2>Distribución comercial</h2>${[...groups].map(([key,count])=>`<div class="attention"><span>${esc(key||'Sin etapa')}</span><b>${count}</b></div>`).join('')}</section><section class="panel"><h2>Cobertura de información</h2><p>${state.detail_count} detalles consultados de ${state.records.length} oportunidades locales.</p><p>${dates.length} fechas de prueba observadas. Las vistas por fecha se generan desde los datos consultados.</p><p class="subtle">Este resumen operativo usa estados actuales. Conversión histórica, cohortes y analítica predictiva permanecen en el roadmap.</p></section></div>`;
+    return `<div class="guide-grid"><section class="panel"><h2>Distribución comercial</h2>${[...groups].map(([key,count])=>`<div class="attention"><span>${esc(key||'Sin etapa')}</span><b>${count}</b></div>`).join('')}</section><section class="panel"><h2>Cobertura de información</h2><p>${filtered.filter(r=>state.details?.[r.opportunity_number]).length} detalles disponibles de ${filtered.length} oportunidades con los filtros actuales.</p><p>${dates.length} fechas de prueba observadas. Las vistas por fecha se generan desde los datos consultados.</p><p class="subtle">Este resumen operativo usa estados actuales. Conversión histórica, cohortes y analítica predictiva permanecen en el roadmap.</p></section></div>`;
   }
-  function workbookPanel(filtered){
-    const registry=window.UnisWorkbookViews,current=registry.views.find(v=>v.name===workbookView)||registry.views[0];
-    const get=(row,key)=>value(row,key), subset=registry.filter(filtered,current,get);
-    const descriptions={base:'Una fila por oportunidad con su contacto principal vinculado. No equivale a una exportación completa de leads.',registration:'Candidatos por etapa comercial 02/03 o referencia de prueba. La inscripción y el pago requieren confirmación de su fuente.',enrollment:'Referencias de matrícula por etapa comercial 05 o estado Campus del contacto. No confirma pago ni matrícula académica.',interviews:'Registros con indicador de entrevista o actividad de tipo entrevista. Incluye indicadores negativos; no acredita asistencia.',pda:'Coincidencias con fecha de prueba explícita: '+(current.date||'')+'. Los registros sin fecha consultada no se pueden asignar a esta convocatoria.',school:'Cuenta vinculada que contiene Kinal; clasificación del colegio pendiente de validar.'};
-    const heading=`<section class="panel workbook-selector"><label>Hoja del Excel<select id="workbook-view" aria-label="Hoja del Excel">${registry.views.map(v=>`<option ${v.name===current.name?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label><p class="subtle">26 vistas de trabajo · datos consultados en Oracle, sin importar registros del Excel. Los campos pendientes permanecen identificados.</p></section>`;
-    if(current.kind==='summary')return heading+filters()+coverageNote(filtered)+summaryView(filtered)+workbookSummary(filtered);
+  function admissionsPanel(filtered){
+    const registry=window.UnisAdmissionsViews,kind=({contacts:'base',tests:'pda',registration:'registration',interviews:'interviews',enrollment:'enrollment'})[view];
+    const cohorts=registry.views.filter(v=>['pda','school'].includes(v.kind));
+    const knownDates=new Set(cohorts.map(v=>v.date));
+    for(const row of filtered){const date=registry.date(value(row,'pda_date'));if(date&&!knownDates.has(date)){knownDates.add(date);cohorts.push({name:'PDA · '+new Intl.DateTimeFormat('es-GT',{day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(date+'T00:00:00Z')),kind:'pda',date,fields:cohorts[0].fields});}}
+    const current=view==='tests'?(cohorts.find(v=>v.name===cohort)||{kind:'all-tests',name:'Pruebas y convocatorias',fields:cohorts[0].fields}):registry.views.find(v=>v.kind===kind);
+    const get=(row,key)=>value(row,key),subset=registry.filter(filtered,current,get);
+    const descriptions={base:'Contacto principal vinculado a cada oportunidad. La misma persona puede tener varias oportunidades.',registration:'Oportunidades en etapas comerciales de inscripción o presencia a prueba (02 y 03). La etapa no confirma el pago ni la asistencia efectiva.',enrollment:'Referencias de matrícula por etapa comercial 05 o estado Campus registrado en el contacto. Pendiente de conciliación académica y financiera.',interviews:'Indicadores de entrevista y citas vinculadas. El indicador no confirma una entrevista realizada.',pda:'Convocatoria del '+(current.date||'')+'. Se incluyen solo las fechas de prueba registradas; la cobertura muestra los casos que aún no se pueden clasificar.',school:'Jornada Kinal: referencias de cuentas vinculadas. La clasificación del colegio está pendiente de verificación.','all-tests':'Prueba, convocatoria, resultados y expediente por oportunidad. Selecciona una jornada para revisar su cartera.'};
+    const heading=view==='tests'?`<section class="panel cohort-toolbar"><label>Convocatoria<select id="op-cohort" aria-label="Convocatoria"><option value="">Todas las convocatorias</option>${cohorts.map(v=>`<option value="${esc(v.name)}" ${v.name===cohort?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label><p class="subtle">Fechas registradas en el CRM. Una oportunidad sin fecha disponible no se asigna a una jornada.</p></section>`:'';
     const cols=current.fields.map(key=>[key,registry.fields[key][0],catalog.fields[key]?.module||(['person_names','person_last_names','school'].includes(key)?'contact':key==='test_kind'||key==='pda_date'?'tests':'general')]);
-    const mapping=`<details class="panel workbook-mapping"><summary>Origen y cobertura de las columnas</summary><p>Los valores vacíos se distinguen por su descripción. La consulta de perfiles debe renovarse con «Completar datos de la cartera». Los campos que aún no tienen fuente confirmada no se rellenan con supuestos.</p><div class="table-wrap"><table><thead><tr><th>Columna</th><th>Origen / estado de mapeo</th><th>Con valor en esta vista</th></tr></thead><tbody>${current.fields.map(k=>`<tr><td>${esc(registry.fields[k][0])}</td><td>${esc(registry.fields[k][1])}</td><td>${subset.filter(r=>value(r,k)!=='').length} / ${subset.length}</td></tr>`).join('')}</tbody></table></div></details>`;
+    if(view==='interviews')cols.push(['activities','Actividades vinculadas','activities']);
+    const mapping=`<details class="panel field-coverage"><summary>Disponibilidad de información</summary><p>Los campos sin fuente confirmada permanecen pendientes de integración. No se deducen pagos, asistencia ni resultados a partir de otros indicadores.</p><div class="table-wrap"><table><thead><tr><th>Campo</th><th>Origen / disponibilidad</th><th>Con valor</th></tr></thead><tbody>${current.fields.map(k=>`<tr><td>${esc(registry.fields[k][0])}</td><td>${esc(registry.fields[k][1])}</td><td>${subset.filter(r=>value(r,k)!=='').length} / ${subset.length}</td></tr>`).join('')}</tbody></table></div></details>`;
     return heading+coverageNote(filtered)+tableView(subset,cols,{title:current.name,description:descriptions[current.kind]})+mapping;
   }
-  function workbookSummary(filtered){
+  function admissionsSummary(filtered){
     const keys=[['faculty','Por facultad'],['owner','Por asesor'],['pda_date','Por fecha de prueba observada'],['resolution','Resoluciones registradas'],['campus_status','Estado Campus del contacto']];
     return `<div class="guide-grid">${keys.map(([key,label])=>{const counts=new Map();let missing=0;for(const row of filtered){const v=value(row,key);if(!v){missing++;continue;}counts.set(v,(counts.get(v)||0)+1);}return `<section class="panel"><h2>${label}</h2>${[...counts].sort(([a],[b])=>String(a).localeCompare(String(b),'es')).map(([v,n])=>`<div class="attention"><span>${esc(v)}</span><b>${n}</b></div>`).join('')||'<p>Sin valores consultados disponibles.</p>'}<p class="subtle">${missing} sin valor disponible de ${filtered.length}. No equivale a cero casos.</p></section>`;}).join('')}</div>`;
   }
@@ -264,6 +267,6 @@ window.UnisOracleLive = (() => {
       if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open)drawDetail();}}
     catch { /* Retain the last successful view during brief local outages. */ }
   },3000);
-  function reset(){state=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=faculty=testDate='';page=1;inline=null;selected=null;view='base';workbookView='Resumen';activities=[];changes=[];error='';}
+  function reset(){state=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=faculty=testDate='';page=1;inline=null;selected=null;view='base';cohort='';activities=[];changes=[];error='';}
   return {render,reset};
 })();

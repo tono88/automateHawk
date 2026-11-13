@@ -138,7 +138,7 @@ class ScreenAuth:
                 if job['kind']=='details_batch':
                     pending=store.batch()['pending']
                     if pending:
-                        result=self.session_rpc(session,{'kind':'detail','number':pending[0]});store.ingest_detail(result)
+                        result=self.session_rpc(session,{'kind':'detail','number':pending[0],'reuse':True});store.ingest_detail(result)
                         if store.batch()['pending']:self.pool.submit(run)
                 else:
                     store.repository.snapshot_started=datetime.now(timezone.utc)

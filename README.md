@@ -1,6 +1,6 @@
 # UNIS Intelligent Process Hub
 
-Portal local de admisiones para **Oracle Fusion Cloud Sales → Ventas**, con cartera tipo Excel, PostgreSQL y automatización por pantallas. El repositorio contiene código y datos ficticios de pruebas; los registros institucionales, secretos y respaldos permanecen fuera de Git.
+Portal local de admisiones para **Oracle Fusion Cloud Sales → Ventas**, con cartera de admisiones, PostgreSQL y automatización por pantallas. El repositorio contiene código y datos ficticios de pruebas; los registros institucionales, secretos y respaldos permanecen fuera de Git.
 
 ## Acceso y cartera global
 
@@ -10,13 +10,13 @@ PostgreSQL conserva una única copia global. El backend guarda y aplica los perm
 
 La interfaz incluye base, pruebas y convocatorias, entrevistas, pagos, ayuda económica y matrícula. Los datos disponibles se muestran completos; los vacíos indican si Oracle no registró un valor o falta ampliar la lectura. Los campos de pagos y etapas comerciales no acreditan pagos ni matrícula académica.
 
-## Vistas del Excel
+## Operación de admisiones
 
-En Datos de Oracle → Vistas del Excel están las 26 hojas: Resumen, BBDD, Inscrito a PDA, MATRICULAS, ENTREVISTAS y las convocatorias PDA de 2026, incluida Kinal. Los registros provienen de Oracle; el libro solo define la estructura. Todas las tablas permiten ordenar columnas y seleccionar 12, 25, 50, 100, 250 o todas las filas. Los filtros se aplican antes de ordenar y paginar.
+Las vistas están integradas en Resumen, Oportunidades, Aspirantes, Inscripciones a prueba, Pruebas y convocatorias, Entrevistas, Matrícula, Pagos y Asistencia económica. Las jornadas se seleccionan dentro de Pruebas y convocatorias, incluyendo fechas adicionales observadas en el CRM. Las tablas permiten ordenar columnas y seleccionar 12, 25, 50, 100, 250 o todas las filas. Los filtros se aplican antes de ordenar y paginar.
 
-La extracción ampliada consulta el contacto principal desde su relación con la oportunidad y lee el perfil, sin unir personas por nombres. Incluye ID Campus, carrera, facultad, estatus lead, papelería, interés económico y otros campos visibles. Las notas de cobertura distinguen detalle pendiente, acceso por renovar y valores vacíos. Las cargas anteriores se amplían al ejecutar Completar datos de la cartera.
+La extracción ampliada abre el contacto principal desde su relación con la oportunidad, sin unir personas por nombres. Las notas de cobertura distinguen detalle pendiente, acceso por renovar y valores vacíos. Las cargas anteriores se amplían al ejecutar Completar datos de la cartera. Durante una carga se reutiliza una sola página del listado por sesión; se libera tras un minuto sin trabajo, con los mismos límites de acceso y caducidad.
 
-Cada vista incluye el origen y cobertura de sus columnas. Recibos, autorizaciones, pagos efectivos, asistencia, cartas y otros campos del libro todavía requieren una fuente verificada. No se deducen de importes, calificaciones ni etapas comerciales. La vista de matrícula identifica referencias comerciales o del perfil, no certifica una matrícula académica. Los resúmenes cuentan oportunidades, sin deduplicar personas por sus nombres ni copiar totales del Excel.
+Recibos, autorizaciones, pagos efectivos, asistencia, cartas y otros campos todavía requieren una fuente verificada. No se deducen de importes, calificaciones ni etapas comerciales. Matrícula muestra referencias comerciales o del perfil hasta conciliarlas con la fuente académica. Los resúmenes cuentan oportunidades y no deduplican personas por sus nombres.
 
 ## Edición y actividades
 

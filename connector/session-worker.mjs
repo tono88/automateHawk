@@ -1,3 +1,4 @@
+import {decodeExport} from './export-codec.mjs';
 /** Oracle screen gateway: no Oracle APIs, persistent profiles, recordings or raw logs. */
 import {applyScalarChange} from './oracle-write.mjs';
 import {createServer} from 'node:http';
@@ -14,7 +15,7 @@ if(!loginOrigin.startsWith('https://')||!loginOrigin.endsWith('.identity.oraclec
 const sessions=new Map();let active=0,pendingLogins=0;const waiters=[];
 const LIMIT=2,MAX_SESSIONS=8,IDLE=15*60*1000,MAX_AGE=8*60*60*1000;
 async function slot(fn){if(active>=LIMIT)await new Promise(r=>waiters.push(r));else active++;try{return await fn();}finally{const next=waiters.shift();if(next)next();else active--;}}
-async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s)await s.context.close().catch(()=>{});}
+async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){clearTimeout(s.readTimer);await s.context.close().catch(()=>{});}}
 function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
 function trusted(page){return new URL(page.url()).origin===target.origin;}
 async function authenticated(page){return trusted(page)&&await page.getByRole('link',{name:'Página Inicial',exact:true}).count()>0;}
@@ -46,13 +47,15 @@ async function login(body){
 async function run(body){
   const s=sessions.get(body.id);if(!alive(s))throw Error('session');
   if(s.busy)throw Error('busy');s.busy=true;s.seen=Date.now();let page,a;
+  const reusable=body.kind==='detail'&&body.reuse===true;let reuseQuery=false;
   try{
-    page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});
+    if(reusable&&s.readPage&&!s.readPage.isClosed()){page=s.readPage;s.readPage=null;clearTimeout(s.readTimer);reuseQuery=true;}
+    else{page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});}
     await page.getByRole('link',{name:'Página Inicial',exact:true}).waitFor({state:'visible',timeout:30000}).catch(()=>{throw Error('session');});
     if(!await authenticated(page))throw Error('session');
     a=adapter(page);let result;
     if(body.kind==='write')result=await applyScalarChange(a,body.change);
-    else if(body.kind==='detail')result=await collectOpportunityDetail(a,body.number);
+    else if(body.kind==='detail')result=await collectOpportunityDetail(a,body.number,{reuseQuery});
     else {
       await configureQuery(a);
       a.phase='export-actions';await page.getByRole('button',{name:'Acciones',exact:true}).click();
@@ -62,10 +65,12 @@ async function run(body){
       try {
         const stream=await download.createReadStream();
         for await(const chunk of stream){bytes+=chunk.length;if(bytes>10_000_000)throw Error('export-limit');chunks.push(chunk);}
-        result={export_html:Buffer.concat(chunks).toString('utf8'),scope:'Todos los registros que puedo ver · oportunidades abiertas · año actual · exportación de Oracle'};
+        result={export_html:decodeExport(Buffer.concat(chunks)),scope:'Todos los registros que puedo ver · oportunidades abiertas · año actual · exportación de Oracle'};
       } finally {await download.delete().catch(()=>{});}
     }
-    s.seen=Date.now();return result;
+    s.seen=Date.now();
+    if(reusable){const held=page;s.readPage=held;page=null;clearTimeout(s.readTimer);s.readTimer=setTimeout(()=>{if(s.readPage===held){s.readPage=null;held.close().catch(()=>{});}},60000);s.readTimer.unref();}
+    return result;
   }catch(error){console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{s.busy=false;if(page)await page.close().catch(()=>{});}
 }
 const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);

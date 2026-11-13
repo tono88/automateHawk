@@ -1,8 +1,8 @@
 import '../app/static/table-tools.js';
-import '../app/static/workbook-views.js';
+import '../app/static/admissions-views.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-const tools=globalThis.UnisTableTools, book=globalThis.UnisWorkbookViews;
+const tools=globalThis.UnisTableTools, book=globalThis.UnisAdmissionsViews;
 const rows=[{opportunity_number:'SYNTHETIC-10',probability:'9',test_date:'03/11/26'},{opportunity_number:'SYNTHETIC-2',probability:'100',test_date:'15/02/2026'},{opportunity_number:'SYNTHETIC-3',probability:'',test_date:''}];
 test('numeric/date sorting and missing values stay last in both directions',()=>{
  const get=(r,k)=>r[k];
@@ -24,7 +24,8 @@ test('all workbook views have labels and only explicit dates define cohorts',()=
  for(const view of book.views)for(const key of view.fields)assert.ok(book.fields[key],key);
  assert.equal(book.date('11 de noviembre de 2026'),'2026-11-11');
  assert.equal(book.date('11 noviembre'),'');
- assert.equal(book.filter([{test_date:''}],book.views.find(v=>v.name==='PDA 11Noviembre'),(r,k)=>r[k]||'').length,0);
+ assert.equal(book.date('31/02/2026'),'');
+ assert.equal(book.filter([{test_date:''}],book.views.find(v=>v.date==='2026-11-11'),(r,k)=>r[k]||'').length,0);
 });
 test('commercial amount, interview indicator and stage do not create payment or attendance',()=>{
  const r={amount:'100',stage:'05 - Matriculado',interview:'Si',opportunity_number:'SYNTHETIC-1'};

@@ -1,5 +1,5 @@
 "use strict";
-globalThis.UnisWorkbookViews=(()=>{
+globalThis.UnisAdmissionsViews=(()=>{
   const definitions={
     created_at:['Creación de oportunidad','Lista de oportunidades'],owner:['Asesor asignado','Lista de oportunidades'],person_names:['Nombres','Contacto principal'],person_last_names:['Apellidos','Contacto principal'],
     contact_phone:['Teléfono personal','Perfil del contacto'],contact_email:['Correo electrónico','Perfil del contacto'],faculty:['Facultad','Perfil del contacto'],career:['Carrera de interés','Perfil del contacto'],lead_status:['Estatus lead','Perfil del contacto'],school:['Colegio / cuenta vinculada','Cuenta del contacto o de la oportunidad; clasificación como colegio pendiente'],
@@ -11,17 +11,18 @@ globalThis.UnisWorkbookViews=(()=>{
   const registration=['payment_month','payment_date','payment_method','payment_amount','payment_authorization','school','pda_date','campus_id','document_id','birth_date','person_names','person_last_names','faculty','career','contact_phone','contact_email','owner'];
   const enrollment=['campus_status','campus_id','owner','payment_method','payment_receipt','payment_authorization','payment_date','enrollment_month','person_names','person_last_names','contact_email','contact_phone','faculty','career','school','global_score','test_kind','pda_date','american_school','hoodie_size','info_updated','emergency_contacts_updated'];
   const interviews=['pda_date','test_kind','owner','campus_id','person_names','person_last_names','contact_email','contact_phone','guardian_phone','faculty','career','school','school_classification','school_location','agreement','interview','interview_date','interviewer','interview_mode','attended_interview','resolution','letter_delivered','letter_date','enrollment_due','financial_interest','financial_type_1','campus_status','career_support','followup_comments'];
-  const pda=['pda_date','test_call','repeat_test','attended_test','owner','campus_id','attended_briefing','document_id','person_last_names','person_names','contact_email','contact_phone','guardian_phone','birth_date','faculty','career','school','school_classification','school_location','agreement','tutoring','document_status','test_kind','opportunity_comments'];
-  const historical=[...pda,'global_score','paa_score','letter_delivered','letter_date','credentials_state','folio','followup_comments'];
+  const pda=['pda_date','test_call','repeat_test','attended_test','owner','campus_id','attended_briefing','document_id','person_last_names','person_names','contact_email','contact_phone','guardian_phone','birth_date','faculty','career','school','school_classification','school_location','agreement','tutoring','document_status','test_kind','opportunity_comments','global_score','paa_score','grade_average','required_score','resolution'];
+  const historical=[...new Set([...pda,'letter_delivered','letter_date','credentials_state','folio','followup_comments'])];
   const dates=[['11Noviembre','11-11'],['04Noviembre','11-04'],['24Octubre','10-24'],['21Octubre','10-21'],['03Octubre','10-03'],['30Septiembre','09-30'],['12Septiembre','09-12'],['29Agosto','08-29'],['15Agosto','08-15'],['25Julio','07-25'],['11Julio','07-11'],['27Junio','06-27'],['13Junio','06-13'],['30Mayo','05-30'],['23Mayo','05-23'],['16Mayo','05-16'],['Kinal',null],['18Abril','04-18'],['21Marzo','03-21'],['14Marzo','03-14'],['21Febrero','02-21']];
-  const views=[{name:'Resumen',kind:'summary',fields:[]},{name:'BBDD',kind:'base',fields:base},{name:'Inscrito a PDA',kind:'registration',fields:registration},{name:'MATRICULAS',kind:'enrollment',fields:enrollment},{name:'ENTREVISTAS',kind:'interviews',fields:interviews},...dates.map(([name,date],i)=>({name:'PDA '+name,kind:date?'pda':'school',date:date?'2026-'+date:null,fields:i>=13?historical:pda}))];
+  const views=[{name:'Resumen',kind:'summary',fields:[]},{name:'Aspirantes',kind:'base',fields:base},{name:'Inscripciones a prueba',kind:'registration',fields:registration},{name:'Matrícula',kind:'enrollment',fields:enrollment},{name:'Entrevistas',kind:'interviews',fields:interviews},...dates.map(([name,date],i)=>({name:date?'PDA · '+new Intl.DateTimeFormat('es-GT',{day:'numeric',month:'long',year:'numeric',timeZone:'UTC'}).format(new Date('2026-'+date+'T00:00:00Z')):'Jornada Kinal',kind:date?'pda':'school',date:date?'2026-'+date:null,fields:i>=13?historical:pda}))];
   const norm=s=>String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+  function iso(y,m,d){const v=new Date(Date.UTC(Number(y),Number(m)-1,Number(d)));return v.getUTCFullYear()===Number(y)&&v.getUTCMonth()===Number(m)-1&&v.getUTCDate()===Number(d)?`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`:'';}
   function date(value){
-    const s=norm(value).trim();let m=s.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);if(m)return `${m[1]}-${m[2]}-${m[3]}`;
-    m=s.match(/\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2}|\d{2})\b/);if(m)return `${m[3].length===2?'20'+m[3]:m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+    const s=norm(value).trim();let m=s.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);if(m)return iso(m[1],m[2],m[3]);
+    m=s.match(/\b(\d{1,2})[/-](\d{1,2})[/-](20\d{2}|\d{2})\b/);if(m)return iso(m[3].length===2?'20'+m[3]:m[3],m[2],m[1]);
     const months=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
     m=s.replace(/[-/.]/g,' ').match(/\b(\d{1,2})\s*(?:de\s*)?([a-z]+)\s*(?:de\s*)?(20\d{2})\b/);
-    if(m){const month=months.findIndex(v=>v.startsWith(m[2])||m[2]===v);if(month>=0)return `${m[3]}-${String(month+1).padStart(2,'0')}-${m[1].padStart(2,'0')}`;}
+    if(m){const month=months.findIndex(v=>v.startsWith(m[2])||m[2]===v);if(month>=0)return iso(m[3],month+1,m[1]);}
     return '';
   }
   function interviewActivity(row,state){return state.details?.[row.opportunity_number]?.activities?.rows?.find(a=>/entrevist/.test(norm(a.type)));}
@@ -37,7 +38,7 @@ globalThis.UnisWorkbookViews=(()=>{
   function filter(rows,view,get){
     if(view.kind==='pda')return rows.filter(r=>date(get(r,'pda_date'))===view.date);
     if(view.kind==='school')return rows.filter(r=>norm(get(r,'school')).includes('kinal'));
-    if(view.kind==='registration')return rows.filter(r=>/^0[23]\s*-/.test(r.stage||'')||get(r,'pda_date')||get(r,'test_call'));
+    if(view.kind==='registration')return rows.filter(r=>/^0[23]\s*-/.test(r.stage||''));
     if(view.kind==='enrollment')return rows.filter(r=>/^05\s*-/.test(r.stage||'')||/matriculad/.test(norm(get(r,'campus_status'))));
     if(view.kind==='interviews')return rows.filter(r=>get(r,'interview')||get(r,'interview_date'));
     return rows;

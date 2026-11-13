@@ -107,6 +107,32 @@ class PostgresRepository:
             c.execute('INSERT INTO hub.audit_events(actor,action,opportunity_number) VALUES(%s,%s,%s)',(actor,'cancel_change',r['opportunity_number']))
         return {'state':'cancelled'}
 
+    def local_activities(self):
+        with self.connect() as c:
+            rows=c.execute('SELECT * FROM hub.local_activities ORDER BY updated_at DESC').fetchall()
+        for r in rows:
+            r['data']=r.pop('payload');r['sync_state']='local_only'
+            for key in ('created_at','updated_at'):r[key]=r[key].isoformat()
+        return rows
+
+    def save_local_activity(self,item,actor):
+        from psycopg.types.json import Jsonb
+        with self.connect() as c:
+            if not c.execute('SELECT 1 FROM hub.opportunities WHERE opportunity_number=%s FOR UPDATE',(item['opportunity_number'],)).fetchone():raise KeyError()
+            old=c.execute('SELECT * FROM hub.local_activities WHERE id=%s FOR UPDATE',(item['id'],)).fetchone()
+            if old:
+                if old['opportunity_number']!=item['opportunity_number'] or old['kind']!=item['kind']:raise ConflictError('No se puede cambiar el vínculo de una actividad.')
+                if item['version'] is None and old['payload']==item['data']:return {'id':item['id'],'version':old['version'],'sync_state':'local_only'}
+                if old['version']!=item['version']:raise ConflictError('La actividad cambió. Abre la versión actual antes de guardar.')
+                c.execute('UPDATE hub.local_activities SET payload=%s,version=version+1,updated_at=now() WHERE id=%s',(Jsonb(item['data']),item['id']))
+                version=old['version']+1
+            else:
+                if item['version'] is not None:raise ConflictError('La actividad ya no está disponible.')
+                c.execute('INSERT INTO hub.local_activities(id,opportunity_number,kind,payload,actor) VALUES(%s,%s,%s,%s,%s)',(item['id'],item['opportunity_number'],item['kind'],Jsonb(item['data']),actor))
+                version=1
+            c.execute('INSERT INTO hub.audit_events(actor,action,opportunity_number,metadata) VALUES(%s,%s,%s,%s)',(actor,'save_local_activity',item['opportunity_number'],Jsonb({'id':item['id'],'kind':item['kind'],'version':version})))
+        return {'id':item['id'],'version':version,'sync_state':'local_only'}
+
     def settings(self):
         with self.connect() as c:return {r['key']:r['value'] for r in c.execute('SELECT key,value FROM hub.settings').fetchall()}
 

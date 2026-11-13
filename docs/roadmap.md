@@ -50,3 +50,7 @@ Finalmente se evaluarán tableros con filtros, acceso por rol y diccionario de d
 ## Acceso y automatización pendiente
 
 La propuesta de identidad, sesiones y recursos compartidos se detalla en [acceso multiusuario](acceso-multiusuario.md). Node-RED y el mapeo de procesos quedan pendientes; la prioridad actual es completar consultas, hacer visibles los datos reales y validar acceso por persona antes del despliegue institucional.
+
+## Actividades locales
+
+Implementados los formularios de seguimiento, cita e informe de interacción sobre la cartera real, con persistencia separada, edición por versión y estados locales. Los accesos y campos de creación se volvieron a verificar en Oracle cancelando los formularios. La [prueba oficial de actividades](actividades-y-prueba-oficial.md) define los vínculos, catálogos, permisos y confirmaciones pendientes para habilitar el escritor real.

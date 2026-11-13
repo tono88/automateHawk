@@ -42,7 +42,19 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         assert len(repo.load()['details'])==1
         repo.save_setting('sync',{'enabled':True,'interval_minutes':15})
         assert OracleReadStore(repo).settings['interval_minutes']==15
-        print(json.dumps({'postgresql_integration':'passed','checks':10,'data':'synthetic isolated database'}))
+        from app.local_activities import validate
+        item=validate({'id':str(uuid4()),'opportunity_number':row['opportunity_number'],'kind':'tasks','data':{'subject':'Seguimiento ficticio','owner':'Asesor ficticio','local_status':'Pendiente'}})
+        repo.save_local_activity(item,'synthetic-test')
+        repo.save_local_activity(item,'synthetic-test')
+        assert len(repo.local_activities())==1
+        assert PostgresRepository(dsn).local_activities()[0]['data']['subject']=='Seguimiento ficticio'
+        edited=dict(item,version=1,data=dict(item['data'],local_status='Completado'))
+        assert repo.save_local_activity(edited,'synthetic-test')['version']==2
+        try:repo.save_local_activity(edited,'synthetic-test');raise AssertionError('Conflicto no detectado')
+        except ConflictError:pass
+        assert repo.local_activities()[0]['sync_state']=='local_only'
+        assert repo.load()['records'][0]['stage']=='01 - Interesado'
+        print(json.dumps({'postgresql_integration':'passed','checks':16,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

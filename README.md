@@ -74,3 +74,7 @@ Las pruebas usan solo datos ficticios y verifican el demo, la separación de fue
 Los datos reales disponibles se muestran completos en el portal local; su protección se aplica al almacenamiento privado y a la exclusión de Git. Un guion en una celda indica un dato sin valor disponible: el detalle explica si Oracle lo devolvió vacío o falta ampliar la consulta. «Completar datos de la cartera» consulta por lotes los detalles todavía pendientes y conserva lo ya recibido. La cobertura sigue limitada al conjunto de oportunidades importado, no a todo el CRM.
 
 Ver la [propuesta de acceso multiusuario](docs/acceso-multiusuario.md). SSO y permisos por persona siguen pendientes; la instalación permanece local.
+
+## Formularios de actividades locales
+
+La cartera real incorpora + Seguimiento, + Cita y + Informe, junto a una vista de actividades locales y acceso desde el detalle. Se pueden crear, consultar, editar y marcar como completados o cancelados en PostgreSQL. Siempre muestran «Solo local · sin enviar a Oracle». No generan notificaciones. Ver [relación con Oracle y prueba oficial](docs/actividades-y-prueba-oficial.md).

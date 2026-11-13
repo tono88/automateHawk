@@ -1,15 +1,19 @@
 'use strict';
 window.UnisOracleLive = (() => {
   let state, catalog, changes = [], root, view = 'base', query = '', cycle = '', advisor = '',
-    stage = '', testDate = '', page = 1, selected = null, module = 'general',
-    inline = null, error = '', activities = [], activitySchemas = {};
+    stage = '', faculty = '', testDate = '', page = 1, selected = null, module = 'general',
+    inline = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, workbookView = 'Resumen';
   const labels = {name:'Nombre de oportunidad',owner:'Asesor',stage:'Etapa',probability:'Probabilidad',close_date:'Fecha de cierre'};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const time = value => value ? new Date(value).toLocaleString('es-GT', {timeZone:'America/Guatemala'}) : 'Sin consultar';
-  const value = (row, key) => row[key] || state.details?.[row.opportunity_number]?.fields?.[key] || '';
+  const rawValue = (row, key) => row[key] ?? state.details?.[row.opportunity_number]?.fields?.[key] ?? '';
+  const value = (row,key) => window.UnisWorkbookViews.derive(row,key,rawValue,state);
   function fieldHint(row,key) {
     if(key in row || key in (state.details?.[row.opportunity_number]?.fields||{}))return 'Sin valor registrado en Oracle';
-    return state.details?.[row.opportunity_number]?'Campo no disponible en la pantalla de este registro':'Detalle pendiente de actualización';
+    const hint=window.UnisWorkbookViews.fields[key]?.[1];
+    if(hint&&/pendiente|no localizada|no se recopilan/.test(hint))return hint;
+    if(state.details?.[row.opportunity_number]?.schema_version!==2&&hint)return 'Extracción ampliada pendiente: '+hint;
+    return state.details?.[row.opportunity_number]?'Campo no disponible en la pantalla consultada de este registro':'Detalle pendiente de actualización';
   }
   const options = (values, current, all) => `<option value="">${all}</option>${[...new Set(values.filter(Boolean))].sort().map(v => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(v)}</option>`).join('')}`;
   const badge = (text, kind='gray') => `<span class="badge ${kind}">${esc(text)}</span>`;
@@ -35,7 +39,8 @@ window.UnisOracleLive = (() => {
   function rows() {
     const term=query.toLocaleLowerCase('es');
     return state.records.filter(row => {
-      if(term && ![row.opportunity_number,row.name,row.first_name,row.last_name,row.owner,row.account].join(' ').toLocaleLowerCase('es').includes(term)) return false;
+      if(term && ![row.opportunity_number,row.name,row.first_name,row.last_name,row.owner,row.account,value(row,'career'),value(row,'campus_id')].join(' ').toLocaleLowerCase('es').includes(term)) return false;
+      if(faculty && value(row,'faculty')!==faculty)return false;
       if(cycle && value(row,'cycle')!==cycle || advisor && row.owner!==advisor || stage && row.stage!==stage || testDate && value(row,'test_date')!==testDate) return false;
       if(view==='enrollment' && !/^(05|06)\s*-/.test(row.stage)) return false;
       return true;
@@ -50,12 +55,13 @@ window.UnisOracleLive = (() => {
       <p class="subtle">Consulta parcial · ${esc(state.scope)}. Los datos disponibles se muestran completos. Una raya indica un campo sin valor o pendiente de actualización; su descripción distingue cada caso.</p>
       <div class="metrics ops-metrics"><div class="metric accent"><div class="metric-label">Oportunidades en copia local</div><strong>${state.records.length}</strong><small>Identificadas por número oficial</small></div><div class="metric"><div class="metric-label">Detalles consultados</div><strong>${state.detail_count}</strong><small>Cobertura de campos ampliados</small></div><div class="metric"><div class="metric-label">Cambios por confirmar</div><strong>${outstanding}</strong><small>Aún no confirmadas en Oracle</small></div><div class="metric"><div class="metric-label">Versiones observadas</div><strong>${state.database?.historical_versions ?? '—'}</strong><small>Historia de la copia local</small></div></div>
       <div class="detail-progress"><span>${esc(state.job?.message||'Los datos se muestran tal como se recuperaron de Oracle.')}</span><button id="op-enrich" class="tiny-button" ${!state.worker_online||busy?'disabled':''}>Completar datos de la cartera</button></div>
-      <div class="ops-tabs" aria-label="Vistas de admisiones">${[...catalog.views,{id:'local-activities',title:'Seguimientos y citas locales'}].map(v=>`<button data-view="${v.id}" class="${view===v.id?'selected':''}">${esc(v.title)}</button>`).join('')}</div>
+      <div class="ops-tabs" aria-label="Vistas de admisiones">${[catalog.views[0],{id:'workbook',title:'Vistas del Excel'},...catalog.views.slice(1),{id:'local-activities',title:'Seguimientos y citas locales'}].map(v=>`<button data-view="${v.id}" class="${view===v.id?'selected':''}">${esc(v.title)}</button>`).join('')}</div>
       ${error?`<div class="notice" role="alert">${esc(error)}</div>`:''}
-      ${view==='local-activities'?localActivityView(filtered):view==='changes'?queueView():view==='sync'?syncView():view==='roadmap'?roadmapView():view==='summary'?summaryView(filtered):tableView(filtered)}`;
+      ${['tests','interviews','financial'].includes(view)?coverageNote(filtered):''}${view==='workbook'?workbookPanel(filtered):view==='local-activities'?localActivityView(filtered):view==='changes'?queueView():view==='sync'?syncView():view==='roadmap'?roadmapView():view==='summary'?summaryView(filtered):tableView(filtered)}`;
     root.querySelector('#op-sync').onclick=()=>enqueue('opportunities');
     root.querySelector('#op-enrich').onclick=()=>enqueue('details_batch');
-    root.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{view=button.dataset.view;page=1;inline=null;error='';draw();});
+    root.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{view=button.dataset.view;testDate='';page=1;sortKey='';sortDirection='asc';inline=null;error='';draw();});
+    const workbookSelect=root.querySelector('#workbook-view');if(workbookSelect)workbookSelect.onchange=e=>{workbookView=e.target.value;page=1;sortKey='';inline=null;draw();};
     bindTable();
     bindActivities(root);
     root.querySelectorAll('[data-cancel-change]').forEach(button=>button.onclick=async()=>{
@@ -69,7 +75,7 @@ window.UnisOracleLive = (() => {
     };
   }
   function filters() {
-    return `<div class="filters"><input id="op-search" aria-label="Buscar en cartera" placeholder="Buscar por nombre, número, cuenta o asesor…" value="${esc(query)}"><select id="op-cycle" aria-label="Ciclo de ingreso">${options(state.records.map(r=>value(r,'cycle')),cycle,'Todos los ciclos disponibles')}</select><select id="op-advisor" aria-label="Asesor asignado">${options(state.records.map(r=>r.owner),advisor,'Todos los asesores')}</select><select id="op-stage" aria-label="Etapa comercial">${options(state.records.map(r=>r.stage),stage,'Todas las etapas')}</select>${view==='tests'?`<select id="op-test-date" aria-label="Fecha de prueba">${options(state.records.map(r=>value(r,'test_date')),testDate,'Todas las fechas disponibles')}</select>`:''}<button id="op-clear">Limpiar</button></div>`;
+    return `<div class="filters"><input id="op-search" aria-label="Buscar en cartera" placeholder="Buscar por nombre, número, cuenta o asesor…" value="${esc(query)}"><select id="op-faculty" aria-label="Facultad">${options(state.records.map(r=>value(r,'faculty')),faculty,'Todas las facultades disponibles')}</select><select id="op-cycle" aria-label="Ciclo de ingreso">${options(state.records.map(r=>value(r,'cycle')),cycle,'Todos los ciclos disponibles')}</select><select id="op-advisor" aria-label="Asesor asignado">${options(state.records.map(r=>r.owner),advisor,'Todos los asesores')}</select><select id="op-stage" aria-label="Etapa comercial">${options(state.records.map(r=>r.stage),stage,'Todas las etapas')}</select>${view==='tests'?`<select id="op-test-date" aria-label="Fecha de prueba">${options(state.records.map(r=>value(r,'test_date')),testDate,'Todas las fechas disponibles')}</select>`:''}<button id="op-clear">Limpiar</button></div>`;
   }
   const columns = {
     base:[['name','Nombre de oportunidad','general'],['owner','Asesor','advisor'],['stage','Etapa comercial','general'],['probability','Probabilidad','general'],['close_date','Cierre comercial','general'],['cycle','Ciclo','general'],['admission_status','Proceso de admisión','general'],['test_date','Fecha de prueba','tests'],['interview','Entrevista','interviews'],['activities','Citas y tareas','activities']],
@@ -98,18 +104,47 @@ window.UnisOracleLive = (() => {
     if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
     const m=raw.match(/^(\d{2})\/(\d{2})\/(\d{2,4})$/);return m?`${m[3].length===2?'20'+m[3]:m[3]}-${m[2]}-${m[1]}`:'';
   }
-  function tableView(filtered) {
-    const cols=columns[view]||columns.base, pages=Math.max(1,Math.ceil(filtered.length/12));page=Math.min(page,pages);
-    const caption=catalog.views.find(v=>v.id===view);
-    return `<section class="table-panel"><div class="table-toolbar"><div><h2>${esc(caption.title)}</h2><span class="count-pill">${filtered.length}</span></div><span class="subtle">Haz clic en un dato para abrir su módulo</span></div><p class="view-caption">${esc(caption.description)} ${view==='payments'?'Un importe comercial no demuestra que exista un pago confirmado.':''}</p>${filters()}<div class="table-wrap"><table><thead><tr><th>ASPIRANTE / OPORTUNIDAD</th>${cols.map(c=>`<th>${c[1]}</th>`).join('')}<th>ACTIVIDADES LOCALES</th><th>ÚLTIMA OBSERVACIÓN</th></tr></thead><tbody>${filtered.slice((page-1)*12,page*12).map(row=>`<tr><td><button class="name-button" data-detail="${esc(row.opportunity_number)}" data-module="general">${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</button><span class="record-id">${esc(row.opportunity_number)}</span></td>${cols.map(([key,,section])=>`<td>${cell(row,key,section)}</td>`).join('')}<td>${activityActions(row.opportunity_number)}<span class="record-id">${activities.filter(a=>a.opportunity_number===row.opportunity_number).length} registros locales</span></td><td>${esc(time(row._last_seen||state.loaded_at))}<span class="record-id">${state.details?.[row.opportunity_number]?'Detalle disponible':'Detalle pendiente'}</span></td></tr>`).join('')||`<tr><td class="empty" colspan="${cols.length+3}">No hay registros con estos filtros.</td></tr>`}</tbody></table></div><div class="pagination"><span>Valores confirmados de la copia local. Los cambios se confirman solo después de releer Oracle.</span><div><button id="op-prev" ${page===1?'disabled':''}>‹</button> ${page}/${pages}<button id="op-next" ${page===pages?'disabled':''}>›</button></div></div></section>`;
+  function coverageNote(filtered){
+    const visible=filtered.filter(r=>state.details?.[r.opportunity_number]).length;
+    const stored=filtered.filter(r=>state.details?.[r.opportunity_number]||state.detail_states?.[r.opportunity_number]&&state.detail_states[r.opportunity_number]!=='not_loaded').length;
+    const renewing=Math.max(0,stored-visible);
+    return `<p class="coverage-note"><strong>Detalle visible: ${visible} de ${filtered.length} oportunidades.</strong> ${renewing?`${renewing} detalles guardados necesitan comprobar o renovar tu acceso. `:''}${filtered.length-stored} aún no tienen extracción de detalle. La exportación de la lista no incluye estos campos. Una raya no acredita que Oracle carezca de información. Usa «Completar datos de la cartera» o consulta una oportunidad.</p>`;
+  }
+  function sortValue(row,key){
+    if(key==='aspirant')return [row.first_name,row.last_name].filter(Boolean).join(' ')||row.name||'';
+    if(key==='local_activities')return activities.filter(a=>a.opportunity_number===row.opportunity_number).length;
+    if(key==='activities'){const a=state.details?.[row.opportunity_number]?.activities;return a?.queried?a.rows.length:null;}
+    if(key==='_last_seen')return row._last_seen||state.loaded_at;
+    return value(row,key);
+  }
+  function sortHeader(key,label){
+    const active=sortKey===key, direction=active?sortDirection==='asc'?'ascending':'descending':'none';
+    return `<th scope="col" aria-sort="${direction}"><button class="column-sort" data-sort="${key}" title="Ordenar ${esc(label)} de forma ${active&&sortDirection==='asc'?'descendente':'ascendente'}">${esc(label)}<span aria-hidden="true">${active?sortDirection==='asc'?'↑':'↓':'↕'}</span></button></th>`;
+  }
+  function identityHeader(){
+    const active=['aspirant','opportunity_number'].includes(sortKey);
+    return `<th scope="col" aria-sort="${active?sortDirection==='asc'?'ascending':'descending':'none'}"><button class="column-sort" data-sort="aspirant">ASPIRANTE / OPORTUNIDAD <span aria-hidden="true">${sortKey==='aspirant'?sortDirection==='asc'?'↑':'↓':'↕'}</span></button><button class="number-sort" data-sort="opportunity_number" title="Ordenar por número de oportunidad">Número ${sortKey==='opportunity_number'?sortDirection==='asc'?'↑':'↓':'↕'}</button></th>`;
+  }
+  function detailStateLabel(number){
+    const status=state.detail_states?.[number];
+    return ({available:'Detalle disponible',permission_expired:'Renovar permisos del detalle',permission_required:'Verificar acceso al detalle',not_loaded:'Detalle sin extraer'})[status]||(state.details?.[number]?'Detalle disponible':'Detalle sin extraer');
+  }
+  function tableView(filtered,overrideCols,overrideCaption) {
+    const cols=overrideCols||columns[view]||columns.base;
+    const ordered=window.UnisTableTools.sort(filtered,sortKey,sortDirection,sortValue);
+    const paging=window.UnisTableTools.paginate(ordered,pageSize,page);page=paging.page;const pages=paging.pages;
+    const caption=overrideCaption||catalog.views.find(v=>v.id===view);
+    return `<section class="table-panel"><div class="table-toolbar"><div><h2>${esc(caption.title)}</h2><span class="count-pill">${filtered.length}</span></div><span class="subtle">Haz clic en un dato para abrir su módulo</span></div><p class="view-caption">${esc(caption.description)} ${view==='payments'?'Un importe comercial no demuestra que exista un pago confirmado.':''}</p>${filters()}<div class="table-wrap"><table><thead><tr>${identityHeader()}${cols.map(c=>sortHeader(c[0],c[1])).join('')}${sortHeader('local_activities','ACTIVIDADES LOCALES')}${sortHeader('_last_seen','ÚLTIMA OBSERVACIÓN')}</tr></thead><tbody>${paging.rows.map(row=>`<tr><td><button class="name-button" data-detail="${esc(row.opportunity_number)}" data-module="general">${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</button><span class="record-id">${esc(row.opportunity_number)}</span></td>${cols.map(([key,,section])=>`<td>${cell(row,key,section)}</td>`).join('')}<td>${activityActions(row.opportunity_number)}<span class="record-id">${activities.filter(a=>a.opportunity_number===row.opportunity_number).length} registros locales</span></td><td>${esc(time(row._last_seen||state.loaded_at))}<span class="record-id">${esc(detailStateLabel(row.opportunity_number))}</span></td></tr>`).join('')||`<tr><td class="empty" colspan="${cols.length+3}">No hay registros con estos filtros.</td></tr>`}</tbody></table></div><div class="pagination"><span role="status">${paging.start}–${paging.end} de ${filtered.length} oportunidades</span><label class="page-size">Filas por página<select id="op-page-size" aria-label="Filas por página">${[12,25,50,100,250,'all'].map(n=>`<option value="${n}" ${String(n)===String(pageSize)?'selected':''}>${n==='all'?'Todas':n}</option>`).join('')}</select></label><div><button id="op-prev" aria-label="Página anterior" ${page===1?'disabled':''}>‹</button> ${page}/${pages}<button id="op-next" aria-label="Página siguiente" ${page===pages?'disabled':''}>›</button></div></div></section>`;
   }
   function bindTable() {
+    root.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{sortDirection=sortKey===button.dataset.sort&&sortDirection==='asc'?'desc':'asc';sortKey=button.dataset.sort;page=1;inline=null;draw();});
+    const size=root.querySelector('#op-page-size');if(size)size.onchange=e=>{pageSize=e.target.value==='all'?'all':Number(e.target.value);page=1;draw();};
     const search=root.querySelector('#op-search');
     if(search)search.oninput=event=>{query=event.target.value;const pos=event.target.selectionStart;page=1;draw();const target=root.querySelector('#op-search');target.focus();target.setSelectionRange(pos,pos);};
-    for(const [id,set] of [['op-cycle',v=>cycle=v],['op-advisor',v=>advisor=v],['op-stage',v=>stage=v],['op-test-date',v=>testDate=v]]){
+    for(const [id,set] of [['op-faculty',v=>faculty=v],['op-cycle',v=>cycle=v],['op-advisor',v=>advisor=v],['op-stage',v=>stage=v],['op-test-date',v=>testDate=v]]){
       const element=root.querySelector('#'+id);if(element)element.onchange=e=>{set(e.target.value);page=1;draw();};
     }
-    const clear=root.querySelector('#op-clear');if(clear)clear.onclick=()=>{query=cycle=advisor=stage=testDate='';page=1;draw();};
+    const clear=root.querySelector('#op-clear');if(clear)clear.onclick=()=>{query=cycle=advisor=stage=faculty=testDate='';page=1;draw();};
     const prev=root.querySelector('#op-prev'),next=root.querySelector('#op-next');if(prev)prev.onclick=()=>{page--;draw();};if(next)next.onclick=()=>{page++;draw();};
     root.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>openDetail(button.dataset.detail,button.dataset.module));
     root.querySelectorAll('[data-inline]').forEach(button=>button.onclick=()=>{inline={number:button.dataset.inline,key:button.dataset.field};error='';draw();});
@@ -129,7 +164,7 @@ window.UnisOracleLive = (() => {
   }
   function drawDetail() {
     const row=state.records.find(r=>r.opportunity_number===selected),detail=state.details?.[selected];if(!row)return;
-    const dialog=ensureDrawer(), tabs=[['general','Resumen'],['advisor','Asesor'],['tests','Pruebas'],['interviews','Entrevista'],['activities','Citas y tareas'],['payments','Pagos'],['financial','Ayuda económica']];
+    const dialog=ensureDrawer(), tabs=[['general','Resumen'],['advisor','Asesor'],['contact','Contacto y estudios'],['tests','Pruebas'],['interviews','Entrevista'],['activities','Citas y tareas'],['payments','Pagos'],['financial','Ayuda económica']];
     const fields=Object.entries(catalog.fields).filter(([,definition])=>definition.module===module);
     const currentJob=state.job,busy=['pending','running'].includes(currentJob?.state);
     dialog.innerHTML=`<div class="dialog-head"><div><span class="eyebrow">DETALLE DE ORACLE · COPIA LOCAL</span><h2>${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</h2><p class="subtle">${esc(selected)} · ${esc(time(detail?.loaded_at))}</p></div><button id="crm-close" class="icon-button" aria-label="Cerrar detalle">×</button></div><div class="ops-tabs">${tabs.map(([id,title])=>`<button data-section="${id}" class="${id===module?'selected':''}">${title}</button>`).join('')}</div><div class="notice">${detail?'Permisos y valores observados en la cuenta del trabajador.':'Aún no se ha consultado el detalle de esta oportunidad.'} Los cambios propuestos quedan separados del valor confirmado.</div>
@@ -205,6 +240,20 @@ window.UnisOracleLive = (() => {
     const dates=[...new Set(filtered.map(row=>value(row,'test_date')).filter(Boolean))];
     return `<div class="guide-grid"><section class="panel"><h2>Distribución comercial</h2>${[...groups].map(([key,count])=>`<div class="attention"><span>${esc(key||'Sin etapa')}</span><b>${count}</b></div>`).join('')}</section><section class="panel"><h2>Cobertura de información</h2><p>${state.detail_count} detalles consultados de ${state.records.length} oportunidades locales.</p><p>${dates.length} fechas de prueba observadas. Las vistas por fecha se generan desde los datos consultados.</p><p class="subtle">Este resumen operativo usa estados actuales. Conversión histórica, cohortes y analítica predictiva permanecen en el roadmap.</p></section></div>`;
   }
+  function workbookPanel(filtered){
+    const registry=window.UnisWorkbookViews,current=registry.views.find(v=>v.name===workbookView)||registry.views[0];
+    const get=(row,key)=>value(row,key), subset=registry.filter(filtered,current,get);
+    const descriptions={base:'Una fila por oportunidad con su contacto principal vinculado. No equivale a una exportación completa de leads.',registration:'Candidatos por etapa comercial 02/03 o referencia de prueba. La inscripción y el pago requieren confirmación de su fuente.',enrollment:'Referencias de matrícula por etapa comercial 05 o estado Campus del contacto. No confirma pago ni matrícula académica.',interviews:'Registros con indicador de entrevista o actividad de tipo entrevista. Incluye indicadores negativos; no acredita asistencia.',pda:'Coincidencias con fecha de prueba explícita: '+(current.date||'')+'. Los registros sin fecha consultada no se pueden asignar a esta convocatoria.',school:'Cuenta vinculada que contiene Kinal; clasificación del colegio pendiente de validar.'};
+    const heading=`<section class="panel workbook-selector"><label>Hoja del Excel<select id="workbook-view" aria-label="Hoja del Excel">${registry.views.map(v=>`<option ${v.name===current.name?'selected':''}>${esc(v.name)}</option>`).join('')}</select></label><p class="subtle">26 vistas de trabajo · datos consultados en Oracle, sin importar registros del Excel. Los campos pendientes permanecen identificados.</p></section>`;
+    if(current.kind==='summary')return heading+filters()+coverageNote(filtered)+summaryView(filtered)+workbookSummary(filtered);
+    const cols=current.fields.map(key=>[key,registry.fields[key][0],catalog.fields[key]?.module||(['person_names','person_last_names','school'].includes(key)?'contact':key==='test_kind'||key==='pda_date'?'tests':'general')]);
+    const mapping=`<details class="panel workbook-mapping"><summary>Origen y cobertura de las columnas</summary><p>Los valores vacíos se distinguen por su descripción. La consulta de perfiles debe renovarse con «Completar datos de la cartera». Los campos que aún no tienen fuente confirmada no se rellenan con supuestos.</p><div class="table-wrap"><table><thead><tr><th>Columna</th><th>Origen / estado de mapeo</th><th>Con valor en esta vista</th></tr></thead><tbody>${current.fields.map(k=>`<tr><td>${esc(registry.fields[k][0])}</td><td>${esc(registry.fields[k][1])}</td><td>${subset.filter(r=>value(r,k)!=='').length} / ${subset.length}</td></tr>`).join('')}</tbody></table></div></details>`;
+    return heading+coverageNote(filtered)+tableView(subset,cols,{title:current.name,description:descriptions[current.kind]})+mapping;
+  }
+  function workbookSummary(filtered){
+    const keys=[['faculty','Por facultad'],['owner','Por asesor'],['pda_date','Por fecha de prueba observada'],['resolution','Resoluciones registradas'],['campus_status','Estado Campus del contacto']];
+    return `<div class="guide-grid">${keys.map(([key,label])=>{const counts=new Map();let missing=0;for(const row of filtered){const v=value(row,key);if(!v){missing++;continue;}counts.set(v,(counts.get(v)||0)+1);}return `<section class="panel"><h2>${label}</h2>${[...counts].sort(([a],[b])=>String(a).localeCompare(String(b),'es')).map(([v,n])=>`<div class="attention"><span>${esc(v)}</span><b>${n}</b></div>`).join('')||'<p>Sin valores consultados disponibles.</p>'}<p class="subtle">${missing} sin valor disponible de ${filtered.length}. No equivale a cero casos.</p></section>`;}).join('')}</div>`;
+  }
   function roadmapView() {
     const phases=[['01','Base persistente','Implementado','PostgreSQL, copia local, historial por cambios y respaldo verificable.'],['02','Vistas del equipo','Piloto en curso','Cartera, pruebas por fecha, entrevistas, pagos, ayuda y matrícula; extracción de detalle por oportunidad.'],['03','Gestión sobre Oracle','Siguiente','Escritores por operación, revalidación de permisos, aprobación, idempotencia y confirmación posterior.'],['04','Sincronización confiable','En evolución','Intervalos, prioridades, detección de cambios, colas, reconciliación y cobertura completa.'],['05','Operación institucional','Pendiente','SSO, permisos por cartera, ambientes, observabilidad, soporte y recuperación.'],['06','Inteligencia de negocio','Roadmap','Modelo analítico, cohortes, conversiones, tiempos por etapa y tableros con gobierno del dato.']];
     return `<div class="roadmap-list">${phases.map(([n,title,status,description])=>`<article class="panel roadmap-card"><span class="roadmap-number">${n}</span><div>${badge(status,n==='01'?'green':'gray')}<h2>${title}</h2><p>${description}</p></div></article>`).join('')}</div>`;
@@ -215,6 +264,6 @@ window.UnisOracleLive = (() => {
       if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open)drawDetail();}}
     catch { /* Retain the last successful view during brief local outages. */ }
   },3000);
-  function reset(){state=null;catalog=null;query=cycle=advisor=stage=testDate='';page=1;inline=null;selected=null;view='base';activities=[];changes=[];error='';}
+  function reset(){state=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=faculty=testDate='';page=1;inline=null;selected=null;view='base';workbookView='Resumen';activities=[];changes=[];error='';}
   return {render,reset};
 })();

@@ -18,7 +18,7 @@ async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s)awai
 function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
 function trusted(page){return new URL(page.url()).origin===target.origin;}
 async function authenticated(page){return trusted(page)&&await page.getByRole('link',{name:'PÃ¡gina Inicial',exact:true}).count()>0;}
-function adapter(page){return {ui:page,observe:async()=>{await page.locator('body').waitFor({state:'visible'});await page.waitForTimeout(300);},clickAdvanced:async()=>{const b=page.getByRole('button',{name:'Mostrar bÃºsqueda avanzada',exact:true});if(await b.count())await b.click();else if(!await page.getByRole('button',{name:'Ocultar bÃºsqueda avanzada',exact:true}).count())throw Error('layout');},scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}
+function adapter(page){return {ui:page,observe:async()=>{await page.locator('body').waitFor({state:'visible'});await page.waitForTimeout(300);},clickAdvanced:async()=>{const b=page.getByRole('button',{name:'Mostrar bÃºsqueda avanzada',exact:true}).first();if(await b.count())await b.click();else if(!await page.getByRole('button',{name:'Ocultar bÃºsqueda avanzada',exact:true}).count())throw Error('layout');},scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}
 async function login(body){
   if(sessions.size+pendingLogins>=MAX_SESSIONS)throw Error('capacity');
   pendingLogins++;let context,page;
@@ -33,7 +33,7 @@ async function login(body){
     if(await user.count()!==1||await password.count()!==1)throw Error('login-layout');
     await user.fill(body.username);await password.fill(body.password);
     body.password='';
-    const submit=page.getByRole('button',{name:/^(Sign In|Iniciar sesión|Iniciar sesión segura|Acceder)$/i});
+    const submit=page.getByRole('button',{name:/^(Sign In|Iniciar sesiÃ³n|Iniciar sesiÃ³n segura|Acceder)$/i});
     if(await submit.count())await submit.click();else await password.press('Enter');
     try{await page.getByRole('link',{name:'PÃ¡gina Inicial',exact:true}).waitFor({state:'visible',timeout:45000});}catch{throw Error('credentials-or-challenge');}
     if(!await authenticated(page))throw Error('session');
@@ -57,16 +57,16 @@ async function run(body){
       await configureQuery(a);
       a.phase='export-actions';await page.getByRole('button',{name:'Acciones',exact:true}).click();
       a.phase='export-menu';await page.getByRole('menuitem',{name:'Exportar',exact:true}).waitFor({state:'visible',timeout:10000});
-      a.phase='export-download';const [download]=await Promise.all([page.waitForEvent('download',{timeout:65000}),page.getByRole('menuitem',{name:'Exportar',exact:true}).click()]);
+      a.phase='export-download';const [download]=await Promise.all([page.waitForEvent('download',{timeout:65000}),page.getByRole('menuitem',{name:'Exportar',exact:true}).click({noWaitAfter:true,timeout:65000})]);
       let bytes=0;const chunks=[];
       try {
         const stream=await download.createReadStream();
         for await(const chunk of stream){bytes+=chunk.length;if(bytes>10_000_000)throw Error('export-limit');chunks.push(chunk);}
-        result={export_html:Buffer.concat(chunks).toString('utf8'),scope:'Todos los registros que puedo ver · oportunidades abiertas · año actual · exportación de Oracle'};
+        result={export_html:Buffer.concat(chunks).toString('utf8'),scope:'Todos los registros que puedo ver Â· oportunidades abiertas Â· aÃ±o actual Â· exportaciÃ³n de Oracle'};
       } finally {await download.delete().catch(()=>{});}
     }
     s.seen=Date.now();return result;
-  }catch(error){console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':'error');throw error;}finally{s.busy=false;if(page)await page.close().catch(()=>{});}
+  }catch(error){console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{s.busy=false;if(page)await page.close().catch(()=>{});}
 }
 const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
 const http=createServer(async(req,res)=>{

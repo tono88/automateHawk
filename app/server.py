@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/oracle/changes':return self.respond(200,{'changes':self.oracle.repository.changes() if self.oracle.repository else []})
         if path=='/api/oracle/activities':return self.respond(200,{'schemas':ACTIVITY_SCHEMA,'activities':self.oracle.repository.local_activities() if self.oracle.repository else []})
         if path=='/api/oracle/batch':return self.respond(200,self.oracle.batch())
-        routes={'/auth.js':('auth.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/live.js':('operations.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+        routes={'/workbook-views.js':('workbook-views.js','text/javascript; charset=utf-8'),'/table-tools.js':('table-tools.js','text/javascript; charset=utf-8'),'/auth.js':('auth.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/live.js':('operations.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
         if path not in routes: return self.respond(404,{'error':'Recurso inexistente.'})
         filename,kind=routes[path]
         self.respond(200,(STATIC/filename).read_bytes(),kind)

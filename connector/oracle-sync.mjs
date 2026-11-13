@@ -1,3 +1,4 @@
+import {collectRelatedContact} from './contact-reader.mjs';
 /** Browser UI collector. No Oracle HTTP calls, credentials, files or raw logs. */
 export const SCOPE = 'Todos los registros que puedo ver · oportunidades abiertas · año actual';
 const COLUMNS = {
@@ -126,7 +127,10 @@ export async function configureQuery(adapter) {
   const {ui,observe,clickAdvanced}=adapter;
   adapter.phase='open_query';
   await openOpportunityQuery(adapter);
-  adapter.phase='advanced_search';await clickAdvanced();await observe();
+  adapter.phase='advanced_ready';
+  await ready(adapter,async()=>await ui.getByRole('button',{name:'Mostrar búsqueda avanzada',exact:true}).count()>0||await ui.getByRole('button',{name:'Ocultar búsqueda avanzada',exact:true}).count()>0);
+  adapter.phase='advanced_toggle';await clickAdvanced();await observe();
+  adapter.phase='scope_ready';
   await ready(adapter,async()=>await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).count()>0);
   adapter.phase='scope_filter';await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).click();
   await ui.getByRole('option',{name:'Todos los registros que puedo ver',exact:true}).click();
@@ -182,7 +186,8 @@ export function readSummaryDetail() {
     'Fecha limite entrega papeleria':'documents_due','Razon Retraso Pago de Matricula':'tuition_delay_reason',
     'Cierre Reserva de cupo':'reservation_close','Importe':'amount','Origen':'origin',
     'Nombre':'name','Responsable':'owner','Etapa de ventas':'stage',
-    'Probabilidad de ganar (%)':'probability','Fecha de cierre':'close_date'
+    'Probabilidad de ganar (%)':'probability','Fecha de cierre':'close_date',
+    'Puntaje Global':'global_score','Puntaje PAA':'paa_score','Promedio':'grade_average','Puntaje Requerido':'required_score','Tipo Asistencia Economica 2':'financial_type_2','Porcentaje Solicitado AE 2':'financial_requested_2','Porcentaje Otorgado AE 2':'financial_granted_2','Aceptacion':'financial_acceptance','Comentarios Asistencia Economica':'financial_comments'
   };
   const fields={},capabilities={},priority={};
   for(const label of root.querySelectorAll('label')) {
@@ -214,10 +219,14 @@ export function readLinkedActivities() {
 
 export async function collectOpportunityDetail(adapter,number) {
   await configureQuery(adapter);
-  await selectOpportunityByNumber(adapter,number);
-  await openCachedDetail(adapter,number);
-  const payload=await captureOpenDetail(adapter,number);
-  await closeCachedDetail(adapter);
+  adapter.phase='select_record';await selectOpportunityByNumber(adapter,number);
+  adapter.phase='open_detail';await openCachedDetail(adapter,number);
+  adapter.phase='capture_detail';const payload=await captureOpenDetail(adapter,number);
+  try {
+    adapter.phase='linked_contact';const contact=await collectRelatedContact(adapter);
+    Object.assign(payload.fields,contact.fields);Object.assign(payload.capabilities,contact.capabilities);
+    payload.schema_version=2;
+  } finally {await closeCachedDetail(adapter);}
   return payload;
 }
 

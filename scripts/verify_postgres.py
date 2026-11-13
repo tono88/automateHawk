@@ -67,6 +67,8 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         assert a.load()['details'] and ScopedRepository(dsn,'synthetic-user-a').load()['details']
         assert not b.local_activities() and a.schema==b.schema=='hub'
         b.save_snapshot([row],'Usuario B autorizado al mismo registro')
+        assert b.load()['detail_states'][row['opportunity_number']]=='permission_required'
+        assert not b.load()['details']
         assert len(b.load()['records'])==1
         assert len(repo.load()['records'])==2
         owned=dict(item,id=str(uuid4()))
@@ -86,10 +88,13 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         a.snapshot_started=datetime.now(timezone.utc)-timedelta(minutes=1)
         a.save_snapshot([row],'Lectura antigua que terminó después de guardar')
         assert b.load()['records'][0]['name']=='Nombre ficticio actualizado'
+        assert a.load()['detail_states'][row['opportunity_number']]=='available'
+        with a.connect() as c:c.execute("UPDATE user_permissions SET detail_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
+        assert a.load()['detail_states'][row['opportunity_number']]=='permission_expired' and not a.load()['details']
         with a.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
         assert not a.load()['records']
         assert b.load()['records']
-        print(json.dumps({'postgresql_integration':'passed','checks':31,'data':'synthetic isolated database'}))
+        print(json.dumps({'postgresql_integration':'passed','checks':35,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

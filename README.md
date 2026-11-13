@@ -10,6 +10,14 @@ PostgreSQL conserva una única copia global. El backend guarda y aplica los perm
 
 La interfaz incluye base, pruebas y convocatorias, entrevistas, pagos, ayuda económica y matrícula. Los datos disponibles se muestran completos; los vacíos indican si Oracle no registró un valor o falta ampliar la lectura. Los campos de pagos y etapas comerciales no acreditan pagos ni matrícula académica.
 
+## Vistas del Excel
+
+En Datos de Oracle → Vistas del Excel están las 26 hojas: Resumen, BBDD, Inscrito a PDA, MATRICULAS, ENTREVISTAS y las convocatorias PDA de 2026, incluida Kinal. Los registros provienen de Oracle; el libro solo define la estructura. Todas las tablas permiten ordenar columnas y seleccionar 12, 25, 50, 100, 250 o todas las filas. Los filtros se aplican antes de ordenar y paginar.
+
+La extracción ampliada consulta el contacto principal desde su relación con la oportunidad y lee el perfil, sin unir personas por nombres. Incluye ID Campus, carrera, facultad, estatus lead, papelería, interés económico y otros campos visibles. Las notas de cobertura distinguen detalle pendiente, acceso por renovar y valores vacíos. Las cargas anteriores se amplían al ejecutar Completar datos de la cartera.
+
+Cada vista incluye el origen y cobertura de sus columnas. Recibos, autorizaciones, pagos efectivos, asistencia, cartas y otros campos del libro todavía requieren una fuente verificada. No se deducen de importes, calificaciones ni etapas comerciales. La vista de matrícula identifica referencias comerciales o del perfil, no certifica una matrícula académica. Los resúmenes cuentan oportunidades, sin deduplicar personas por sus nombres ni copiar totales del Excel.
+
 ## Edición y actividades
 
 Guardar en un campo escalar habilitado de la lista envía una solicitud por pantalla de Oracle: nombre de oportunidad, etapa comercial, probabilidad o fecha de cierre. Antes de guardar se verifica permiso y conflicto; después se relee el registro. El valor global solo cambia al confirmar el resultado. Las escrituras al mismo registro se serializan; un resultado incierto no se repite automáticamente y puede verificarse desde Cambios en Oracle.

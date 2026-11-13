@@ -49,7 +49,7 @@ class ReadModelTests(unittest.TestCase):
         self.s.ingest(body)
         self.assertEqual(self.s.request('details_batch')['total'],2)
         self.s.claim()
-        detail={'opportunity_number':'SYNTHETIC-001','fields':{'cycle':''}}
+        detail={'opportunity_number':'SYNTHETIC-001','schema_version':2,'fields':{'cycle':''}}
         self.s.ingest_detail(detail);self.s.ingest_detail(detail)
         self.assertEqual(self.s.status()['job']['processed'],1)
         self.assertEqual(self.s.batch()['pending'],['SYNTHETIC-002'])
@@ -59,6 +59,19 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(self.s.status()['job']['state'],'completed')
         self.assertEqual(self.s.request('details_batch')['total'],0)
         self.assertEqual(self.s.batch()['pending'],[])
+
+    def test_expanded_profile_schema_and_upgrade(self):
+        self.s.ingest(payload())
+        data={'opportunity_number':'SYNTHETIC-001','fields':{'cycle':'2271'}}
+        self.s.ingest_detail(data)
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+        self.s.claim()
+        data.update(schema_version=2,fields={'campus_id':'SYNTHETIC-CAMPUS','faculty':'Facultad ficticia'})
+        self.s.ingest_detail(data)
+        self.assertEqual(self.s.snapshot()['details']['SYNTHETIC-001']['schema_version'],2)
+        self.assertEqual(self.s.request('details_batch')['total'],0)
+        for version in (True,3,'2'):
+            with self.assertRaises(ValidationError):self.s.ingest_detail(dict(data,schema_version=version))
 
     def test_reader_cannot_propose_or_change_schedule(self):
         with self.assertRaises(PermissionError):self.s.propose({})

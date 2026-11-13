@@ -12,4 +12,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: node --test tests/connector.test.mjs
+      - run: node --test tests/connector.test.mjs tests/oracle-write.test.mjs tests/table-views.test.mjs

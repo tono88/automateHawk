@@ -29,6 +29,7 @@ class OracleReadStore:
         self.role=role
         self.actor='local-editor'
         self.details={}
+        self.detail_states={}
         self.settings={'enabled':False,'interval_minutes':15,'detail_ttl_minutes':30,'reconcile_hours':24}
         if repository:
             self._reload()
@@ -36,7 +37,7 @@ class OracleReadStore:
 
     def _reload(self):
         state=self.repository.load()
-        self.records=state['records'];self.loaded_at=state['loaded_at'];self.scope=state['scope'];self.details=state['details']
+        self.records=state['records'];self.loaded_at=state['loaded_at'];self.scope=state['scope'];self.details=state['details'];self.detail_states=state.get('detail_states',{})
 
     def heartbeat(self):
         with self.lock:
@@ -64,7 +65,7 @@ class OracleReadStore:
             if kind=='detail' and not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             if kind=='details_batch':
-                self.batch_numbers=[r['opportunity_number'] for r in self.records if r['opportunity_number'] not in self.details]
+                self.batch_numbers=[r['opportunity_number'] for r in self.records if self.details.get(r['opportunity_number'],{}).get('schema_version',1)<2]
                 self.batch_done=set()
                 self.job.update(total=len(self.batch_numbers),processed=0)
                 if not self.batch_numbers:self.job.update(state='completed',message='La cartera cargada ya tiene sus detalles disponibles.')
@@ -129,10 +130,11 @@ class OracleReadStore:
                                  detail_count=len(self.details),database=self.repository.summary() if self.repository else None))
 
     def snapshot(self):
-        with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details))
+        with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details),detail_states=deepcopy(self.detail_states))
 
     def ingest_detail(self,body):
-        if not isinstance(body,dict) or set(body)-{'opportunity_number','fields','capabilities','activities'}:raise ValidationError('Detalle inválido.')
+        if not isinstance(body,dict) or set(body)-{'opportunity_number','fields','capabilities','activities','schema_version'}:raise ValidationError('Detalle inválido.')
+        if type(body.get('schema_version',1))!=int or body.get('schema_version',1) not in (1,2):raise ValidationError('Versión de detalle inválida.')
         number=body.get('opportunity_number')
         if not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
         fields=body.get('fields',{});caps=body.get('capabilities',{})
@@ -144,7 +146,7 @@ class OracleReadStore:
         allowed={'activity','subject','date','owner','type','priority'}
         for row in activity['rows']:
             if not isinstance(row,dict) or set(row)-allowed or any(not isinstance(v,str) or len(v)>1000 for v in row.values()):raise ValidationError('Actividad inválida.')
-        payload={'fields':fields,'capabilities':caps,'activities':activity,'source':'oracle-ui','partial':True}
+        payload={'schema_version':body.get('schema_version',1),'fields':fields,'capabilities':caps,'activities':activity,'source':'oracle-ui','partial':True}
         with self.lock:
             if self.repository:self.repository.save_detail(number,payload);self._reload()
             else:self.details[number]=dict(payload,loaded_at=datetime.now(timezone.utc).isoformat())

@@ -35,6 +35,7 @@ class ScopedRepository(PostgresRepository):
     def load(self):
         result=super().load();grants=self.grants();now=datetime.now(timezone.utc)
         result['records']=[{k:v for k,v in r.items() if k in grants[r['opportunity_number']]['basic_fields'] or k.startswith('_') or k=='opportunity_number'} for r in result['records'] if r['opportunity_number'] in grants]
+        result['detail_states']={r['opportunity_number']:('not_loaded' if r['opportunity_number'] not in result['details'] else 'permission_required' if not grants[r['opportunity_number']]['detail_until'] else 'permission_expired' if grants[r['opportunity_number']]['detail_until']<now else 'available') for r in result['records']}
         details={}
         for number,d in result['details'].items():
             g=grants.get(number)

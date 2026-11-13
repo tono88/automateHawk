@@ -26,3 +26,12 @@ No basta con cambiar la URL del simulador. Un adaptador real necesita selectores
 No añadir adjuntos institucionales a este repositorio. No activar capturas, grabaciones, trazas HAR, registros de formularios ni guardado de sesiones con datos reales. Las exclusiones de Git son una ayuda, no una garantía de anonimización; revisar explícitamente los archivos antes de cada publicación.
 
 El laboratorio publica su puerto solo en loopback. La puesta en producción exige sustituir el servidor de demo por un servicio autenticado, TLS, permisos por rol y cartera, almacenamiento persistente, gestión de secretos, monitoreo sin PII y procedimientos de soporte y recuperación.
+
+
+## Vistas y lectura ampliada
+
+Comprobadas las 26 opciones del selector Vistas del Excel, el orden ascendente y descendente por número oficial, la paginación y las opciones de cantidad de filas, incluida Todas. Las pruebas automáticas cubren orden numérico/fecha, valores vacíos, límites de página, estructura de vistas, actualización de versiones de extracción y restricciones de permisos.
+
+El recorrido de lectura abre la oportunidad por número oficial, consulta el diagnóstico y asistencia económica, revisa actividades y abre el perfil del contacto principal desde la relación Contactos. Se verificó el retorno mediante Cancelar, sin guardar cambios. La estructura ampliada admite campos de contacto, resultados y un segundo tipo de asistencia. Cada registro informa su versión de extracción para reanudar cargas anteriores.
+
+La prueba de restauración del respaldo se realiza fuera del repositorio. La extracción masiva y los campos aún sin fuente se informan por su cobertura real; esta validación no certifica una importación completa ni el contenido de todos los registros. No se recopilan contraseñas de aspirantes ni se infieren pagos, asistencia o decisiones académicas.

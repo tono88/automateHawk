@@ -45,19 +45,19 @@ async function login(body){
 }
 async function run(body){
   const s=sessions.get(body.id);if(!alive(s))throw Error('session');
-  if(s.busy)throw Error('busy');s.busy=true;s.seen=Date.now();let page;
+  if(s.busy)throw Error('busy');s.busy=true;s.seen=Date.now();let page,a;
   try{
     page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});
     await page.getByRole('link',{name:'Página Inicial',exact:true}).waitFor({state:'visible',timeout:30000}).catch(()=>{throw Error('session');});
     if(!await authenticated(page))throw Error('session');
-    const a=adapter(page);let result;
+    a=adapter(page);let result;
     if(body.kind==='write')result=await applyScalarChange(a,body.change);
     else if(body.kind==='detail')result=await collectOpportunityDetail(a,body.number);
     else {
       await configureQuery(a);
-      await page.getByRole('button',{name:'Acciones',exact:true}).click();
-      await page.getByRole('menuitem',{name:'Exportar',exact:true}).waitFor({state:'visible',timeout:10000});
-      const [download]=await Promise.all([page.waitForEvent('download',{timeout:65000}),page.getByRole('menuitem',{name:'Exportar',exact:true}).click()]);
+      a.phase='export-actions';await page.getByRole('button',{name:'Acciones',exact:true}).click();
+      a.phase='export-menu';await page.getByRole('menuitem',{name:'Exportar',exact:true}).waitFor({state:'visible',timeout:10000});
+      a.phase='export-download';const [download]=await Promise.all([page.waitForEvent('download',{timeout:65000}),page.getByRole('menuitem',{name:'Exportar',exact:true}).click()]);
       let bytes=0;const chunks=[];
       try {
         const stream=await download.createReadStream();
@@ -66,7 +66,7 @@ async function run(body){
       } finally {await download.delete().catch(()=>{});}
     }
     s.seen=Date.now();return result;
-  }finally{s.busy=false;if(page)await page.close().catch(()=>{});}
+  }catch(error){console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':'error');throw error;}finally{s.busy=false;if(page)await page.close().catch(()=>{});}
 }
 const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
 const http=createServer(async(req,res)=>{

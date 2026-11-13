@@ -151,10 +151,13 @@ class ScreenAuth:
                         store.repository.observed_fields=result.pop('visible_fields',{})
                         store.ingest(result)
             except AuthError as error:
+                print('Oracle read failure:',error.code,flush=True)
                 store.fail('session' if error.code in ('session','credentials-or-challenge') else 'timeout')
                 if error.code=='session':
                     with self.lock:
                         for token,s in list(self.sessions.items()):
                             if s is session:self.sessions.pop(token,None)
-            except Exception:store.fail('timeout')
+            except Exception as error:
+                print('Oracle mirror failure:',type(error).__name__,flush=True)
+                store.fail('timeout')
         self.pool.submit(run)

@@ -18,11 +18,13 @@ const adapter={
     if(await show.count())await show.click();
     else if(!await page.getByText('Ocultar búsqueda avanzada',{exact:true}).count())throw Error('layout');
   },
-  scrollGrid:async()=>{
-    const box=await page.getByRole('table',{name:'Oportunidad',exact:true}).last().boundingBox();
+  scrollGrid:async(direction='down',pages=4)=>{
+    const box=await page.getByRole('table',{name:'Oportunidad',exact:true}).first().evaluate(t=>{
+      const r=t.parentElement.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};
+    });
     if(!box)throw Error('layout');
     await page.mouse.move(box.x+Math.min(box.width,300)/2,box.y+Math.min(box.height,200)/2);
-    await page.mouse.wheel(0,900);
+    await page.mouse.wheel(0,(direction==='up'?-1:1)*Math.min(900,225*pages));
     await page.waitForTimeout(600);
   }
 };

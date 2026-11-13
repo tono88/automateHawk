@@ -1,11 +1,43 @@
 services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: hub_admin
+      POSTGRES_DB: automatehawk
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
+    secrets:
+      - postgres_admin_password
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub_admin -d automatehawk"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
   hub:
     build: .
     ports:
       - "127.0.0.1:8765:8080"
     environment:
       HUB_MODE: local
+      HUB_DATABASE_DSN_FILE: /run/secrets/hub_database_dsn
+      HUB_LOCAL_ROLE: ${HUB_LOCAL_ROLE:-reader}
+    secrets:
+      - hub_database_dsn
+    depends_on:
+      postgres:
+        condition: service_healthy
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
+volumes:
+  postgres_data:
+secrets:
+  postgres_admin_password:
+    file: ${HUB_PG_ADMIN_SECRET_FILE:?Run scripts/provision_local.py first}
+  hub_database_dsn:
+    file: ${HUB_PG_DOCKER_DSN_FILE:?Run scripts/provision_local.py first}

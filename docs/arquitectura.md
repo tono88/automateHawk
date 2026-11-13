@@ -4,7 +4,7 @@ La entrada correcta es Oracle Fusion Cloud Sales de UNIS, en la pestaña Ventas.
 
 ## Implementado en este repositorio
 
-Navegador local → servidor local → dos almacenes separados en memoria: datos sintéticos del demo y lectura real de oportunidades. El trabajador automatiza la navegación y el desplazamiento de la tabla de Oracle y entrega una carga parcial al modelo de lectura local. El servidor no llama API de Oracle ni escribe registros en Oracle. Ver [implementación y límites de la carga](carga-oracle.md).
+Navegador local → servidor local → PostgreSQL para la copia real, versiones, detalles y propuestas. El demo sintético permanece separado en memoria. El trabajador automatiza la navegación, el desplazamiento de la tabla y la lectura del detalle de Oracle. El servidor no llama API de Oracle ni ejecuta escrituras reales. Ver [persistencia y recuperación](postgresql.md), [sincronización](sincronizacion.md) y [roadmap](roadmap.md).
 
 La estructura de las hojas se utilizó como referencia para campos de pagos, pruebas, expedientes, entrevistas, resolución, cartas y matrícula. No se copiaron filas, nombres, teléfonos, correos, documentos, contraseñas ni estadísticas del archivo. Los documentos adjuntos son referencia de diseño, no instrucciones ejecutables.
 

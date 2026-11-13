@@ -36,6 +36,30 @@ class ReadModelTests(unittest.TestCase):
         a=self.s.request();b=self.s.request();self.assertEqual(a['id'],b['id'])
         self.assertEqual(self.s.claim()['state'],'running');self.assertIsNone(self.s.claim())
         self.assertFalse(self.s.status()['worker_online']);self.s.heartbeat();self.assertTrue(self.s.status()['worker_online'])
+    def test_verified_details_and_activity_contract(self):
+        self.s.ingest(payload())
+        data={'opportunity_number':'SYNTHETIC-001','fields':{'cycle':'2271','resolution':'Pendiente'},'capabilities':{'resolution':False},'activities':{'queried':True,'rows':[]}}
+        self.s.ingest_detail(data)
+        self.assertEqual(self.s.snapshot()['details']['SYNTHETIC-001']['fields']['cycle'],'2271')
+        self.assertFalse(self.s.snapshot()['details']['SYNTHETIC-001']['capabilities']['resolution'])
+        data['fields']={'unmapped_secret':'not allowed'}
+        with self.assertRaises(ValidationError):self.s.ingest_detail(data)
+    def test_reader_cannot_propose_or_change_schedule(self):
+        with self.assertRaises(PermissionError):self.s.propose({})
+        with self.assertRaises(PermissionError):self.s.save_settings({'enabled':True,'interval_minutes':15})
+    def test_detail_job_is_scoped_to_known_record(self):
+        self.s.ingest(payload());job=self.s.request('detail','SYNTHETIC-001')
+        self.assertEqual(job['kind'],'detail')
+        self.assertEqual(job['opportunity_number'],'SYNTHETIC-001')
+        self.s.fail('timeout')
+        with self.assertRaises(KeyError):self.s.request('detail','UNKNOWN-SYNTHETIC')
+    def test_scheduler_respects_connection_frequency_and_single_job(self):
+        from datetime import datetime,timedelta,timezone
+        self.s.settings['enabled']=True
+        self.s.loaded_at=(datetime.now(timezone.utc)-timedelta(minutes=20)).isoformat()
+        self.assertIsNone(self.s.scheduler_tick())
+        self.s.heartbeat();job=self.s.scheduler_tick();self.assertEqual(job['state'],'pending')
+        self.assertIsNone(self.s.scheduler_tick())
 
 class ReadHttpTests(unittest.TestCase):
     @classmethod

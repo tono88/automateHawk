@@ -5,13 +5,14 @@ from secrets import token_urlsafe
 from threading import RLock
 from time import monotonic
 from .domain import ValidationError, ConflictError
+from .catalog import DETAIL_FIELDS, EDIT_FIELDS, validate_change
 
 FIELDS = ('opportunity_number','first_name','last_name','name','account','close_date',
           'probability','stage','status','segment','contact_name','owner','phone',
           'created_at','updated_at')
 
 class OracleReadStore:
-    def __init__(self):
+    def __init__(self,repository=None,role='reader'):
         self.lock=RLock()
         self.records=[]
         self.loaded_at=None
@@ -19,6 +20,20 @@ class OracleReadStore:
         self.job=None
         self.tickets={}
         self.worker_seen=0
+        self.claimed_at=0
+        self.failure_count=0
+        self.retry_after=0
+        self.repository=repository
+        self.role=role
+        self.details={}
+        self.settings={'enabled':False,'interval_minutes':15,'detail_ttl_minutes':30,'reconcile_hours':24}
+        if repository:
+            self._reload()
+            self.settings.update(repository.settings().get('sync',{}))
+
+    def _reload(self):
+        state=self.repository.load()
+        self.records=state['records'];self.loaded_at=state['loaded_at'];self.scope=state['scope'];self.details=state['details']
 
     def heartbeat(self):
         with self.lock:
@@ -38,16 +53,21 @@ class OracleReadStore:
             expires=self.tickets.pop(token,None)
             if not expires or expires<monotonic(): raise PermissionError()
 
-    def request(self):
+    def request(self,kind='opportunities',number=None):
         with self.lock:
+            if self.job and self.job['state']=='running' and self.claimed_at and monotonic()-self.claimed_at>900:self.fail('timeout')
             if self.job and self.job['state'] in ('pending','running'): return deepcopy(self.job)
-            self.job=dict(id=token_urlsafe(12),state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
+            if kind not in ('opportunities','detail'):raise ValidationError('Operación de consulta desconocida.')
+            if kind=='detail' and not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
+            self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             return deepcopy(self.job)
 
     def claim(self):
         with self.lock:
+            if self.job and self.job['state']=='running' and self.claimed_at and monotonic()-self.claimed_at>900:self.fail('timeout')
             if not self.job or self.job['state']!='pending': return None
             self.job.update(state='running',message='Consultando Oracle mediante su interfaz.',started_at=datetime.now(timezone.utc).isoformat())
+            self.claimed_at=monotonic()
             return deepcopy(self.job)
 
     def fail(self,message):
@@ -58,6 +78,8 @@ class OracleReadStore:
                   'timeout':'Oracle no terminó la consulta. Se conserva la carga anterior.'}
             if not self.job: self.request()
             self.job.update(state='failed',message=safe.get(message,'No se pudo completar la consulta. Se conserva la carga anterior.'),finished_at=datetime.now(timezone.utc).isoformat())
+            self.failure_count+=1
+            self.retry_after=monotonic()+(900 if message=='session' else min(60*2**min(self.failure_count-1,5),1800))
 
     def ingest(self,body):
         if not isinstance(body,dict) or set(body)-{'records','scope','partial'}: raise ValidationError('Carga inválida.')
@@ -78,18 +100,75 @@ class OracleReadStore:
             if not number or len(number)>80 or number in seen: raise ValidationError('Número oficial vacío o repetido.')
             seen.add(number);clean.append(out)
         with self.lock:
-            self.records=clean
-            self.loaded_at=datetime.now(timezone.utc).isoformat()
+            if self.repository:
+                self.repository.save_snapshot(clean,scope);self._reload()
+            else:
+                self.records=clean
+                self.loaded_at=datetime.now(timezone.utc).isoformat()
             self.scope=scope
             if not self.job: self.request()
             self.job.update(state='completed',message=f'Carga parcial verificada: {len(clean)} oportunidades.',finished_at=self.loaded_at)
+            self.failure_count=0;self.retry_after=0
             return self.status()
 
     def status(self):
         with self.lock:
             return deepcopy(dict(source='oracle-ui',read_only=True,partial=True,count=len(self.records),loaded_at=self.loaded_at,
-                                 scope=self.scope,job=self.job,storage='memory',worker_required=True,
-                                 worker_online=bool(self.worker_seen and monotonic()-self.worker_seen<90)))
+                                 scope=self.scope,job=self.job,storage='postgresql' if self.repository else 'memory',worker_required=True,
+                                 worker_online=bool(self.worker_seen and monotonic()-self.worker_seen<90),
+                                 role=self.role,can_propose=self.role=='editor' and bool(self.repository),settings=self.settings,
+                                 retry_in_seconds=max(0,int(self.retry_after-monotonic())),
+                                 detail_count=len(self.details),database=self.repository.summary() if self.repository else None))
 
     def snapshot(self):
-        with self.lock: return dict(**self.status(),records=deepcopy(self.records))
+        with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details))
+
+    def ingest_detail(self,body):
+        if not isinstance(body,dict) or set(body)-{'opportunity_number','fields','capabilities','activities'}:raise ValidationError('Detalle inválido.')
+        number=body.get('opportunity_number')
+        if not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
+        fields=body.get('fields',{});caps=body.get('capabilities',{})
+        if not isinstance(fields,dict) or set(fields)-set(DETAIL_FIELDS):raise ValidationError('Campo de detalle no permitido.')
+        if not isinstance(caps,dict) or set(caps)-set(DETAIL_FIELDS) or any(type(v)!=bool for v in caps.values()):raise ValidationError('Permisos inválidos.')
+        if any(not isinstance(v,str) or len(v)>2000 for v in fields.values()):raise ValidationError('Valor de detalle inválido.')
+        activity=body.get('activities',{'queried':False,'rows':[]})
+        if not isinstance(activity,dict) or set(activity)-{'queried','rows'} or type(activity.get('queried'))!=bool or not isinstance(activity.get('rows'),list) or len(activity['rows'])>100:raise ValidationError('Actividades inválidas.')
+        allowed={'activity','subject','date','owner','type','priority'}
+        for row in activity['rows']:
+            if not isinstance(row,dict) or set(row)-allowed or any(not isinstance(v,str) or len(v)>1000 for v in row.values()):raise ValidationError('Actividad inválida.')
+        payload={'fields':fields,'capabilities':caps,'activities':activity,'source':'oracle-ui','partial':True}
+        with self.lock:
+            if self.repository:self.repository.save_detail(number,payload);self._reload()
+            else:self.details[number]=dict(payload,loaded_at=datetime.now(timezone.utc).isoformat())
+            if not self.job:self.request()
+            self.job.update(state='completed',message='Detalle consultado y guardado en la copia local.',finished_at=datetime.now(timezone.utc).isoformat())
+            self.failure_count=0;self.retry_after=0
+        return self.status()
+
+    def propose(self,body):
+        if self.role!='editor' or not self.repository:raise PermissionError()
+        if not isinstance(body,dict) or set(body)-{'opportunity_number','field','value','version'}:raise ValidationError('Solicitud inválida.')
+        number=body.get('opportunity_number');field=body.get('field')
+        value=validate_change(field,body.get('value'))
+        detail=self.details.get(number)
+        if not detail or not detail.get('capabilities',{}).get(field):raise PermissionError()
+        loaded=datetime.fromisoformat(detail['loaded_at'])
+        if (datetime.now(timezone.utc)-loaded).total_seconds()>1800:raise ConflictError('Vuelve a consultar los permisos del detalle antes de editar.')
+        return self.repository.propose(number,field,value,body.get('version'),'local-editor')
+
+    def save_settings(self,body):
+        if self.role!='editor' or not self.repository:raise PermissionError()
+        if set(body)-{'enabled','interval_minutes'} or type(body.get('enabled'))!=bool or type(body.get('interval_minutes'))!=int or not 5<=body['interval_minutes']<=240:raise ValidationError('Intervalo permitido: de 5 a 240 minutos.')
+        with self.lock:
+            self.settings.update(body);self.repository.save_setting('sync',self.settings)
+        return self.settings
+
+    def scheduler_tick(self):
+        with self.lock:
+            if self.retry_after>monotonic():return None
+            if not self.settings['enabled'] or not self.worker_seen or monotonic()-self.worker_seen>=90:return None
+            if self.job and self.job['state'] in ('pending','running'):return None
+            if self.loaded_at:
+                elapsed=(datetime.now(timezone.utc)-datetime.fromisoformat(self.loaded_at)).total_seconds()
+                if elapsed<self.settings['interval_minutes']*60:return None
+            return self.request()

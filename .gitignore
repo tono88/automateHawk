@@ -18,3 +18,9 @@ dist/
 screenshots/
 private/
 data/
+backups/
+postgres-data/
+*.dump
+*.backup
+*.dsn
+.secrets/

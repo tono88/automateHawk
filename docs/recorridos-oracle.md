@@ -52,4 +52,14 @@ Oportunidades: Número de oportunidad, nombre y apellido del contacto principal,
 
 ## Pendiente de comprobar
 
-Detalle de un expediente conocido, pestañas de datos académicos, nombres técnicos de extensiones, asignación del responsable en contacto/oportunidad, altas y cambios reales, persistencia, deduplicación de Oracle, borrado recuperable, aprobación, auditoría institucional, MFA y límites de concurrencia. El botón Calificar no se ejecutó. No se enviaron comunicaciones ni se crearon citas reales.
+Cobertura completa de expedientes, edición y permisos por usuario, altas y cambios reales, deduplicación de Oracle, borrado recuperable, aprobación, auditoría institucional, MFA y límites de concurrencia. El botón Calificar no se ejecutó. No se enviaron comunicaciones ni se crearon citas reales.
+
+## Ampliación del detalle
+
+Se abrió una oportunidad existente desde su número oficial y se inspeccionaron Resumen, Diagnóstico de Admisiones, Asistencia Economica, Información Adicional y Actividades. Se consultó una muestra ampliada y se guardó en PostgreSQL. La cobertura de detalle sigue siendo parcial y visible en el indicador del portal.
+
+Se mapearon ciclo, año, estado del proceso de admisión, convocatoria, tipo y fecha de prueba, resolución, entrevista, campos de asistencia económica, reserva de cupo y razón de retraso de matrícula. Se registró si cada control estaba habilitado o aparecía como texto de solo lectura. No se capturaron puntuaciones detalladas ni documentos de identidad.
+
+El módulo Actividades tiene filtro Todas las actividades y columnas Actividad, Asunto, Fecha, Responsable, Cuenta, Type y Prioridad. En la muestra consultada no se mostraron actividades vinculadas. Ese resultado no implica ausencia global de citas de la persona en otros sistemas u oportunidades.
+
+La lectura ADF requiere esperar a que las tablas reemplazadas estén listas y desplazar la fila hasta una posición visible antes de abrirla. Hubo transiciones lentas y límites del navegador integrado; por eso no se certifica todavía la extracción desatendida de toda la cartera.

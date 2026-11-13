@@ -13,10 +13,13 @@ window.UnisOracleLive = (() => {
   }
   const options = (values, current, all) => `<option value="">${all}</option>${[...new Set(values.filter(Boolean))].sort().map(v => `<option value="${esc(v)}" ${v===current?'selected':''}>${esc(v)}</option>`).join('')}`;
   const badge = (text, kind='gray') => `<span class="badge ${kind}">${esc(text)}</span>`;
-  const pending = (number, key) => changes.find(c => c.opportunity_number===number && c.field===key && ['pending_validation','approved','applying'].includes(c.state));
+  const pending = (number, key) => changes.find(c => c.opportunity_number===number && c.field===key && ['pending_validation','queued','approved','applying','uncertain'].includes(c.state));
   async function request(path, body) {
+    const generation=window.HubAuth.generation;
     const response = await fetch(path, body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data = await response.json();
+    if(generation!==window.HubAuth.generation)throw Error('La sesión cambió.');
+    if(response.status===401)window.HubAuth.expired();
     if (!response.ok) throw Error(data.error || 'No se pudo completar la operación.');
     return data;
   }
@@ -26,8 +29,8 @@ window.UnisOracleLive = (() => {
     if (!catalog) catalog = await request('/api/oracle/catalog');
   }
   async function render(target) {
-    root=target;
-    try {await refresh(); draw();} catch {target.innerHTML='<div class="empty">No se pudo leer la copia local. Comprueba PostgreSQL y el servidor.</div>';}
+    root=target;const generation=window.HubAuth.generation;
+    try {await refresh(); draw();} catch {if(generation!==window.HubAuth.generation||!window.HubAuth.isAuthenticated())return;target.innerHTML='<div class="empty">No se pudo leer la copia local. Comprueba PostgreSQL y el servidor.</div>';}
   }
   function rows() {
     const term=query.toLocaleLowerCase('es');
@@ -39,13 +42,13 @@ window.UnisOracleLive = (() => {
     });
   }
   function draw() {
-    if(!root || !document.querySelector('[data-mode="live"].active')) return;
+    if(!window.HubAuth.isAuthenticated()||!root || !document.querySelector('[data-mode="live"].active')) return;
     const filtered=rows(), busy=['pending','running'].includes(state.job?.state);
-    const outstanding=changes.filter(c=>['pending_validation','approved','applying'].includes(c.state)).length;
-    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">AUTOMATEHAWK · OPERACIÓN DE ADMISIONES</span><h1>La cartera, conectada.</h1><p>Consulta local, detalle por módulo y propuestas de cambio con trazabilidad.</p></div><button class="primary" id="op-sync" ${!state.worker_online||busy?'disabled':''}>${busy?'Consulta en curso…':'Actualizar desde Oracle'}</button></div>
-      <div class="source-strip"><span>${badge(state.storage==='postgresql'?'PostgreSQL · copia persistente':'Copia en memoria',state.storage==='postgresql'?'green':'orange')}</span><span>Última carga: ${esc(time(state.loaded_at))}</span><span>${state.worker_online?'Trabajador conectado':'Trabajador desconectado'}</span><span>Perfil local: ${esc(state.role)}</span></div>
+    const outstanding=changes.filter(c=>['pending_validation','queued','approved','applying','uncertain'].includes(c.state)).length;
+    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">AUTOMATEHAWK · OPERACIÓN DE ADMISIONES</span><h1>La cartera, conectada.</h1><p>Cartera global, detalle por módulo y cambios verificados en Oracle.</p></div><button class="primary" id="op-sync" ${!state.worker_online||busy?'disabled':''}>${busy?'Consulta en curso…':'Actualizar desde Oracle'}</button></div>
+      <div class="source-strip"><span>${badge(state.storage==='postgresql'?'PostgreSQL · copia persistente':'Copia en memoria',state.storage==='postgresql'?'green':'orange')}</span><span>Última carga: ${esc(time(state.loaded_at))}</span><span>${state.worker_online?'Trabajador conectado':'Trabajador desconectado'}</span><span>Permisos locales: ${esc(state.role)}</span></div>
       <p class="subtle">Consulta parcial · ${esc(state.scope)}. Los datos disponibles se muestran completos. Una raya indica un campo sin valor o pendiente de actualización; su descripción distingue cada caso.</p>
-      <div class="metrics ops-metrics"><div class="metric accent"><div class="metric-label">Oportunidades en copia local</div><strong>${state.records.length}</strong><small>Identificadas por número oficial</small></div><div class="metric"><div class="metric-label">Detalles consultados</div><strong>${state.detail_count}</strong><small>Cobertura de campos ampliados</small></div><div class="metric"><div class="metric-label">Propuestas pendientes</div><strong>${outstanding}</strong><small>Aún no confirmadas en Oracle</small></div><div class="metric"><div class="metric-label">Versiones observadas</div><strong>${state.database?.historical_versions ?? '—'}</strong><small>Historia de la copia local</small></div></div>
+      <div class="metrics ops-metrics"><div class="metric accent"><div class="metric-label">Oportunidades en copia local</div><strong>${state.records.length}</strong><small>Identificadas por número oficial</small></div><div class="metric"><div class="metric-label">Detalles consultados</div><strong>${state.detail_count}</strong><small>Cobertura de campos ampliados</small></div><div class="metric"><div class="metric-label">Cambios por confirmar</div><strong>${outstanding}</strong><small>Aún no confirmadas en Oracle</small></div><div class="metric"><div class="metric-label">Versiones observadas</div><strong>${state.database?.historical_versions ?? '—'}</strong><small>Historia de la copia local</small></div></div>
       <div class="detail-progress"><span>${esc(state.job?.message||'Los datos se muestran tal como se recuperaron de Oracle.')}</span><button id="op-enrich" class="tiny-button" ${!state.worker_online||busy?'disabled':''}>Completar datos de la cartera</button></div>
       <div class="ops-tabs" aria-label="Vistas de admisiones">${[...catalog.views,{id:'local-activities',title:'Seguimientos y citas locales'}].map(v=>`<button data-view="${v.id}" class="${view===v.id?'selected':''}">${esc(v.title)}</button>`).join('')}</div>
       ${error?`<div class="notice" role="alert">${esc(error)}</div>`:''}
@@ -58,6 +61,7 @@ window.UnisOracleLive = (() => {
     root.querySelectorAll('[data-cancel-change]').forEach(button=>button.onclick=async()=>{
       try {await request('/api/oracle/changes/cancel',{id:button.dataset.cancelChange});await refresh();draw();} catch(e){error=e.message;draw();}
     });
+    root.querySelectorAll('[data-reconcile-change]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{await request('/api/oracle/changes/reconcile',{id:button.dataset.reconcileChange});await refresh();draw();}catch(e){error=e.message;draw();}});
     const settings=root.querySelector('#sync-form');
     if(settings)settings.onsubmit=async event=>{
       event.preventDefault();
@@ -76,19 +80,19 @@ window.UnisOracleLive = (() => {
     enrollment:[['owner','Asesor','advisor'],['stage','Etapa comercial','general'],['cycle','Ciclo','general'],['resolution','Resolución','tests'],['reservation_close','Reserva de cupo','payments'],['close_date','Cierre comercial','general']]
   };
   function canEdit(row,key) {
-    return state.can_propose && catalog.edit_fields.includes(key) && state.details?.[row.opportunity_number]?.capabilities?.[key]===true;
+    return state.can_propose && !pending(row.opportunity_number,key) && catalog.edit_fields.includes(key) && state.details?.[row.opportunity_number]?.capabilities?.[key]===true;
   }
   function cell(row,key,section) {
     const number=row.opportunity_number;
     if(inline?.number===number&&inline.key===key) {
       const current=value(row,key), type=key==='probability'?'number':key==='close_date'?'date':'text';
       const control=key==='stage'?`<select name="value" aria-label="Nuevo valor de Etapa">${['01 - Interesado','02 - Inscrito a prueba','03 - Presente a prueba: resolución','04 - Perdida','05 - Matriculado','06 - Inscrito'].map(s=>`<option ${s===current?'selected':''}>${s}</option>`).join('')}</select>`:`<input name="value" aria-label="Nuevo valor de ${labels[key]}" type="${type}" value="${esc(type==='date'?isoDate(current):current)}" required>`;
-      return `<form class="inline-editor" data-inline-form="${esc(number)}" data-field="${key}">${control}<button class="primary tiny-button">Proponer</button><button type="button" data-inline-cancel class="tiny-button">×</button></form>`;
+      return `<form class="inline-editor" data-inline-form="${esc(number)}" data-field="${key}">${control}<small>Se enviará a Oracle con tu sesión.</small><button class="primary tiny-button">Guardar en Oracle</button><button type="button" data-inline-cancel class="tiny-button">×</button></form>`;
     }
     let text=value(row,key)||'—';
     if(key==='activities'){const d=state.details?.[number];text=d?.activities?.queried?`${d.activities.rows.length} actividades visibles`:'—';}
     const change=pending(number,key);
-    return `<button class="cell-link" title="${esc(value(row,key)?'Valor recuperado de Oracle':fieldHint(row,key))}" data-detail="${esc(number)}" data-module="${section}">${esc(text)}</button>${canEdit(row,key)?`<button class="pencil" aria-label="Editar ${labels[key]} en la lista" data-inline="${esc(number)}" data-field="${key}">✎</button>`:''}${change?`<span class="record-id pending-label">Propuesta: ${esc(change.new_value)}</span>`:''}`;
+    return `<button class="cell-link" title="${esc(value(row,key)?'Valor recuperado de Oracle':fieldHint(row,key))}" data-detail="${esc(number)}" data-module="${section}">${esc(text)}</button>${canEdit(row,key)?`<button class="pencil" aria-label="Editar ${labels[key]} en la lista" data-inline="${esc(number)}" data-field="${key}">✎</button>`:''}${change?`<span class="record-id pending-label">Por confirmar: ${esc(change.new_value)}</span>`:''}`;
   }
   function isoDate(raw) {
     if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
@@ -97,7 +101,7 @@ window.UnisOracleLive = (() => {
   function tableView(filtered) {
     const cols=columns[view]||columns.base, pages=Math.max(1,Math.ceil(filtered.length/12));page=Math.min(page,pages);
     const caption=catalog.views.find(v=>v.id===view);
-    return `<section class="table-panel"><div class="table-toolbar"><div><h2>${esc(caption.title)}</h2><span class="count-pill">${filtered.length}</span></div><span class="subtle">Haz clic en un dato para abrir su módulo</span></div><p class="view-caption">${esc(caption.description)} ${view==='payments'?'Un importe comercial no demuestra que exista un pago confirmado.':''}</p>${filters()}<div class="table-wrap"><table><thead><tr><th>ASPIRANTE / OPORTUNIDAD</th>${cols.map(c=>`<th>${c[1]}</th>`).join('')}<th>ACTIVIDADES LOCALES</th><th>ÚLTIMA OBSERVACIÓN</th></tr></thead><tbody>${filtered.slice((page-1)*12,page*12).map(row=>`<tr><td><button class="name-button" data-detail="${esc(row.opportunity_number)}" data-module="general">${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</button><span class="record-id">${esc(row.opportunity_number)}</span></td>${cols.map(([key,,section])=>`<td>${cell(row,key,section)}</td>`).join('')}<td>${activityActions(row.opportunity_number)}<span class="record-id">${activities.filter(a=>a.opportunity_number===row.opportunity_number).length} registros locales</span></td><td>${esc(time(row._last_seen||state.loaded_at))}<span class="record-id">${state.details?.[row.opportunity_number]?'Detalle disponible':'Detalle pendiente'}</span></td></tr>`).join('')||`<tr><td class="empty" colspan="${cols.length+3}">No hay registros con estos filtros.</td></tr>`}</tbody></table></div><div class="pagination"><span>Valores confirmados de la copia local. Las propuestas no sustituyen los datos de Oracle.</span><div><button id="op-prev" ${page===1?'disabled':''}>‹</button> ${page}/${pages}<button id="op-next" ${page===pages?'disabled':''}>›</button></div></div></section>`;
+    return `<section class="table-panel"><div class="table-toolbar"><div><h2>${esc(caption.title)}</h2><span class="count-pill">${filtered.length}</span></div><span class="subtle">Haz clic en un dato para abrir su módulo</span></div><p class="view-caption">${esc(caption.description)} ${view==='payments'?'Un importe comercial no demuestra que exista un pago confirmado.':''}</p>${filters()}<div class="table-wrap"><table><thead><tr><th>ASPIRANTE / OPORTUNIDAD</th>${cols.map(c=>`<th>${c[1]}</th>`).join('')}<th>ACTIVIDADES LOCALES</th><th>ÚLTIMA OBSERVACIÓN</th></tr></thead><tbody>${filtered.slice((page-1)*12,page*12).map(row=>`<tr><td><button class="name-button" data-detail="${esc(row.opportunity_number)}" data-module="general">${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</button><span class="record-id">${esc(row.opportunity_number)}</span></td>${cols.map(([key,,section])=>`<td>${cell(row,key,section)}</td>`).join('')}<td>${activityActions(row.opportunity_number)}<span class="record-id">${activities.filter(a=>a.opportunity_number===row.opportunity_number).length} registros locales</span></td><td>${esc(time(row._last_seen||state.loaded_at))}<span class="record-id">${state.details?.[row.opportunity_number]?'Detalle disponible':'Detalle pendiente'}</span></td></tr>`).join('')||`<tr><td class="empty" colspan="${cols.length+3}">No hay registros con estos filtros.</td></tr>`}</tbody></table></div><div class="pagination"><span>Valores confirmados de la copia local. Los cambios se confirman solo después de releer Oracle.</span><div><button id="op-prev" ${page===1?'disabled':''}>‹</button> ${page}/${pages}<button id="op-next" ${page===pages?'disabled':''}>›</button></div></div></section>`;
   }
   function bindTable() {
     const search=root.querySelector('#op-search');
@@ -112,7 +116,8 @@ window.UnisOracleLive = (() => {
     root.querySelectorAll('[data-inline-cancel]').forEach(button=>button.onclick=()=>{inline=null;draw();});
     root.querySelectorAll('[data-inline-form]').forEach(form=>form.onsubmit=async event=>{
       event.preventDefault();const row=state.records.find(r=>r.opportunity_number===form.dataset.inlineForm);
-      try {await request('/api/oracle/changes',{opportunity_number:row.opportunity_number,field:form.dataset.field,value:form.elements.value.value,version:row._version});inline=null;await refresh();error='Propuesta guardada. Pendiente de validar y aplicar en Oracle.';draw();}catch(e){error=e.message;draw();}
+      const submit=form.querySelector('button');if(submit.disabled)return;submit.disabled=true;
+      try {await request('/api/oracle/changes',{opportunity_number:row.opportunity_number,field:form.dataset.field,value:form.elements.value.value,version:row._version});inline=null;await refresh();error='Cambio en cola. Se enviará con tu sesión y se verificará en Oracle.';draw();}catch(e){error=e.message;draw();}
     });
   }
   function ensureDrawer() {
@@ -150,7 +155,7 @@ window.UnisOracleLive = (() => {
     return `<div class="local-actions"><button class="row-action" data-activity-new="tasks" data-number="${esc(number)}">+ Seguimiento</button><button class="row-action" data-activity-new="appointments" data-number="${esc(number)}">+ Cita</button><button class="row-action" data-activity-new="interactions" data-number="${esc(number)}">+ Informe</button></div>`;
   }
   function localCards(list) {
-    return list.map(a=>`<article class="panel local-activity-card"><div class="local-card-head"><span class="eyebrow">${esc(activitySchemas[a.kind].title)}</span>${badge(a.data.local_status,a.data.local_status==='Completado'?'green':'gray')}</div><h2>${esc(a.data.subject)}</h2><p>${esc(a.data.owner)} · ${esc(a.data.followup_date||a.data.start_date||'Sin fecha')} ${esc(a.data.start_time||'')}</p><p class="subtle">${esc(a.data.timezone||'America/Guatemala')}${a.data.location?' · '+esc(a.data.location):''}</p><p class="pending-label">Solo local · sin enviar a Oracle</p><button class="tiny-button" data-activity-edit="${esc(a.id)}">${state.can_propose?'Ver / editar':'Ver detalle'}</button></article>`).join('');
+    return list.map(a=>`<article class="panel local-activity-card"><div class="local-card-head"><span class="eyebrow">${esc(activitySchemas[a.kind].title)}</span>${badge(a.data.local_status,a.data.local_status==='Completado'?'green':'gray')}</div><h2>${esc(a.data.subject)}</h2><p>${esc(a.data.owner)} · ${esc(a.data.followup_date||a.data.start_date||'Sin fecha')} ${esc(a.data.start_time||'')}</p><p class="subtle">${esc(a.data.timezone||'America/Guatemala')}${a.data.location?' · '+esc(a.data.location):''}</p><p class="pending-label">Solo local · sin enviar a Oracle</p><button class="tiny-button" data-activity-edit="${esc(a.id)}">${state.can_propose&&a.can_edit!==false?'Ver / editar':'Ver detalle'}</button></article>`).join('');
   }
   function localActivityPanel(number) {
     const list=activities.filter(a=>a.opportunity_number===number);
@@ -167,7 +172,7 @@ window.UnisOracleLive = (() => {
   function openActivity(kind,number,existing) {
     let dialog=document.querySelector('#local-activity-form');
     if(!dialog){dialog=document.createElement('dialog');dialog.id='local-activity-form';document.body.append(dialog);}
-    const schema=activitySchemas[kind], row=state.records.find(r=>r.opportunity_number===number),editable=state.can_propose;
+    const schema=activitySchemas[kind], row=state.records.find(r=>r.opportunity_number===number),editable=state.can_propose&&(!existing||existing.can_edit!==false);
     const data=existing?.data||{owner:row?.owner||'',account:row?.account||'',contact_reference:row?.contact_name||'',timezone:'America/Guatemala',local_status:'Pendiente'};
     const identifier=existing?.id||crypto.randomUUID();
     dialog.innerHTML=`<div class="dialog-head"><div><span class="eyebrow">ACTIVIDAD LOCAL</span><h2>${existing?'Detalle de':'Crear'} ${esc(schema.title.toLocaleLowerCase('es'))}</h2></div><button class="icon-button" id="activity-close" aria-label="Cerrar formulario">×</button></div><p class="notice">Solo local · sin enviar a Oracle. Guardar no crea registros en Oracle ni envía invitaciones o recordatorios.</p><details class="oracle-preflight"><summary>Preparación de la prueba oficial en Oracle</summary><p>Formulario destino: <strong>${esc(schema.oracle_form)}</strong>. Acceso y etiquetas verificados; guardado real todavía sin validar.</p><p>Antes del envío: confirmar el contacto y la oportunidad por sus identificadores oficiales, resolver los catálogos y el responsable con permisos vigentes, revisar fechas y notificaciones con los responsables y autorizar el caso de prueba. Después de guardar se deberá releer el registro y comprobar que no se duplicó.</p><p>${kind==='tasks'?'El formulario de tarea observado vincula Contacto principal y Cuenta; el vínculo directo a oportunidad requiere validación.':'El responsable local no equivale a un campo Responsable en este formulario de Oracle. Deben validarse organizador y participantes.'}</p></details><form id="activity-fields"><div class="fields"><label class="full">Oportunidad vinculada<select name="opportunity_number" required ${existing?'disabled':''}><option value="">Selecciona una oportunidad</option>${state.records.map(r=>`<option value="${esc(r.opportunity_number)}" ${number===r.opportunity_number?'selected':''}>${esc([r.first_name,r.last_name].filter(Boolean).join(' ')||r.name)} · ${esc(r.opportunity_number)}</option>`).join('')}</select></label>${schema.fields.map(f=>`<label class="${f.kind==='textarea'?'full':''}">${esc(f.label)}${f.required?' *':''}${f.kind==='select'?`<select name="${f.key}" ${f.required?'required':''} ${!editable?'disabled':''}>${!f.required?'<option value="">Sin especificar</option>':''}${f.options.map(v=>`<option ${data[f.key]===v?'selected':''}>${esc(v)}</option>`).join('')}</select>`:f.kind==='textarea'?`<textarea name="${f.key}" ${!editable?'disabled':''} maxlength="6000">${esc(data[f.key]||'')}</textarea>`:`<input name="${f.key}" type="${f.kind==='text'?'text':f.kind}" value="${esc(data[f.key]||'')}" ${f.required?'required':''} maxlength="500" ${!editable?'disabled':''}>`}</label>`).join('')}</div><p id="activity-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" id="activity-cancel">Cerrar</button><span></span>${editable?'<button class="primary" type="submit">Guardar en el portal</button>':''}</div></form>`;
@@ -184,10 +189,12 @@ window.UnisOracleLive = (() => {
     dialog.showModal();
   }
   async function enqueue(kind,number) {
-    try {await request('/api/oracle/jobs',{kind,opportunity_number:number});await refresh();error='Consulta solicitada; se procesará cuando el trabajador esté activo.';draw();if(ensureDrawer().open)drawDetail();}catch(e){error=e.message;draw();}
+    try {await request('/api/oracle/jobs',{kind,opportunity_number:number});await refresh();error='Consulta solicitada con tu sesión de Oracle.';draw();if(ensureDrawer().open)drawDetail();}catch(e){error=e.message;draw();}
   }
   function queueView() {
-    return `<section class="table-panel"><div class="table-toolbar"><h2>Propuestas de cambio</h2></div><div class="notice">El valor de Oracle se conserva. Esta versión registra y controla propuestas; el envío de escrituras reales aún requiere validar el conector y volver a comprobar los permisos.</div><div class="table-wrap"><table><thead><tr><th>OPORTUNIDAD</th><th>CAMPO</th><th>VALOR CONFIRMADO</th><th>PROPUESTA</th><th>ESTADO</th><th>ACCIÓN</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(c.opportunity_number)}</td><td>${esc(labels[c.field]||c.field)}</td><td>${esc(c.old_value)}</td><td>${esc(c.new_value)}</td><td>${badge(({pending_validation:'Pendiente de validar',conflict:'Conflicto: Oracle cambió',cancelled:'Cancelada',confirmed:'Confirmada'})[c.state]||c.state,c.state==='conflict'?'orange':'gray')}</td><td>${state.can_propose&&['pending_validation','conflict'].includes(c.state)?`<button class="tiny-button" data-cancel-change="${esc(c.id)}">Cancelar propuesta</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay propuestas de cambio.</td></tr>'}</tbody></table></div></section>`;
+    const titles={pending_validation:'Pendiente',queued:'En cola',applying:'Guardando en Oracle',uncertain:'Verificación requerida',failed:'No aplicado',conflict:'Conflicto',cancelled:'Cancelado',confirmed:'Confirmado en Oracle'};
+    const reasons={permission:'Oracle no habilita este campo.',conflict:'El valor cambió en Oracle.',validation:'Oracle no aceptó el valor en el formulario.','side-effects':'Oracle propuso otros cambios; requiere revisión.','write-not-started':'No se inició el guardado.',session:'La sesión terminó.',unavailable:'No se pudo determinar el resultado.','server-restarted':'Se reinició el servicio; verifica el resultado.','reconciled-different':'Oracle tiene un valor diferente.',uncertain:'El resultado debe verificarse antes de reintentar.'};
+    return `<section class="table-panel"><div class="table-toolbar"><h2>Cambios y confirmaciones de Oracle</h2></div><div class="notice">Escritor piloto: la prueba institucional de guardado real sigue pendiente. Guardar en la lista envía el cambio con tu sesión. El valor confirmado se actualiza solo al releer Oracle. Un resultado incierto no se reintenta automáticamente. Citas, seguimientos e informes continúan como formularios locales.</div><div class="table-wrap"><table><thead><tr><th>OPORTUNIDAD</th><th>CAMPO</th><th>VALOR ANTERIOR</th><th>CAMBIO SOLICITADO</th><th>ESTADO</th><th>ACCIÓN</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(c.opportunity_number)}</td><td>${esc(labels[c.field]||c.field)}</td><td>${esc(c.old_value)}</td><td>${esc(c.new_value)}</td><td>${badge(titles[c.state]||c.state,c.state==='confirmed'?'green':['uncertain','failed','conflict'].includes(c.state)?'orange':'gray')}<span class="record-id">${esc(reasons[c.result_code]||'')}</span></td><td>${state.can_propose&&c.state==='uncertain'?`<button class="tiny-button" data-reconcile-change="${esc(c.id)}">Verificar en Oracle</button>`:''}${state.can_propose&&['pending_validation','conflict'].includes(c.state)?`<button class="tiny-button" data-cancel-change="${esc(c.id)}">Cancelar</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay cambios registrados con tu usuario.</td></tr>'}</tbody></table></div></section>`;
   }
   function syncView() {
     const config=state.settings;
@@ -203,10 +210,11 @@ window.UnisOracleLive = (() => {
     return `<div class="roadmap-list">${phases.map(([n,title,status,description])=>`<article class="panel roadmap-card"><span class="roadmap-number">${n}</span><div>${badge(status,n==='01'?'green':'gray')}<h2>${title}</h2><p>${description}</p></div></article>`).join('')}</div>`;
   }
   setInterval(async()=>{
-    if(!root||!document.querySelector('[data-mode="live"].active')||inline||document.querySelector('#local-activity-form[open]'))return;
-    try {const signature=JSON.stringify([state?.loaded_at,state?.detail_count,state?.job,state?.worker_online,activities]);await refresh();
-      if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.job,state.worker_online,activities])){draw();if(selected&&ensureDrawer().open)drawDetail();}}
+    if(!window.HubAuth.isAuthenticated()||!root||!document.querySelector('[data-mode="live"].active')||inline||document.querySelector('#local-activity-form[open]'))return;
+    try {const signature=JSON.stringify([state?.loaded_at,state?.detail_count,state?.job,state?.worker_online,state?.records.map(r=>[r.opportunity_number,r._version]),Object.values(state?.details||{}).map(d=>d.loaded_at),activities,changes]);await refresh();
+      if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open)drawDetail();}}
     catch { /* Retain the last successful view during brief local outages. */ }
   },3000);
-  return {render};
+  function reset(){state=null;catalog=null;query=cycle=advisor=stage=testDate='';page=1;inline=null;selected=null;view='base';activities=[];changes=[];error='';}
+  return {render,reset};
 })();

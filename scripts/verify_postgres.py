@@ -18,7 +18,9 @@ admin_base=f'postgresql://hub_admin:{quote(admin)}@127.0.0.1:55432/'
 with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
     owner.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(name)))
     try:
-        with psycopg.connect(admin_base+name,autocommit=True) as setup:setup.execute('CREATE SCHEMA hub AUTHORIZATION hub_app')
+        with psycopg.connect(admin_base+name,autocommit=True) as setup:
+            setup.execute('CREATE SCHEMA hub AUTHORIZATION hub_app')
+            setup.execute(sql.SQL('GRANT CREATE ON DATABASE {} TO hub_app').format(sql.Identifier(name)))
         dsn=f'postgresql://hub_app:{quote(app)}@127.0.0.1:55432/{name}'
         repo=PostgresRepository(dsn)
         row={'opportunity_number':'SYNTHETIC-ONLY-001','name':'Prueba ficticia','stage':'01 - Interesado'}
@@ -54,7 +56,40 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         except ConflictError:pass
         assert repo.local_activities()[0]['sync_state']=='local_only'
         assert repo.load()['records'][0]['stage']=='01 - Interesado'
-        print(json.dumps({'postgresql_integration':'passed','checks':16,'data':'synthetic isolated database'}))
+        from app.scoped_repository import ScopedRepository
+        a=ScopedRepository(dsn,'synthetic-user-a');b=ScopedRepository(dsn,'synthetic-user-b')
+        a.save_snapshot([row],'Solo usuario ficticio A')
+        assert a.load()['records'] and not b.load()['records']
+        try:b.save_local_activity(item,'synthetic-user-b');raise AssertionError('Cross-user write')
+        except PermissionError:pass
+        assert ScopedRepository(dsn,'synthetic-user-a').load()['records']
+        a.save_detail(row['opportunity_number'],{'fields':{'cycle':'2271','name':row['name']},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]}})
+        assert a.load()['details'] and ScopedRepository(dsn,'synthetic-user-a').load()['details']
+        assert not b.local_activities() and a.schema==b.schema=='hub'
+        b.save_snapshot([row],'Usuario B autorizado al mismo registro')
+        assert len(b.load()['records'])==1
+        assert len(repo.load()['records'])==2
+        owned=dict(item,id=str(uuid4()))
+        a.save_local_activity(owned,'synthetic-user-a')
+        b.save_detail(row['opportunity_number'],{'fields':{'name':row['name']},'capabilities':{'name':False},'activities':{'queried':True,'rows':[]}})
+        assert any(not r['can_edit'] for r in b.local_activities())
+        try:b.save_local_activity(dict(owned,version=1),'synthetic-user-b');raise AssertionError('Cross-user activity edit')
+        except PermissionError:pass
+        current=a.load()['records'][0]
+        change=a.propose(row['opportunity_number'],'name','Nombre ficticio actualizado',current['_version'],'synthetic-user-a')
+        a.write_state(change['id'],'synthetic-user-a','queued')
+        assert a.start_write(change['id'],'synthetic-user-a')['state']=='applying'
+        a.confirm_write(change['id'],'synthetic-user-a',{'fields':{'name':'Nombre ficticio actualizado'},'capabilities':{'name':True},'activities':{'queried':False,'rows':[]}})
+        assert a.changes()[0]['state']=='confirmed'
+        assert b.load()['records'][0]['name']=='Nombre ficticio actualizado'
+        from datetime import datetime,timezone,timedelta
+        a.snapshot_started=datetime.now(timezone.utc)-timedelta(minutes=1)
+        a.save_snapshot([row],'Lectura antigua que terminó después de guardar')
+        assert b.load()['records'][0]['name']=='Nombre ficticio actualizado'
+        with a.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
+        assert not a.load()['records']
+        assert b.load()['records']
+        print(json.dumps({'postgresql_integration':'passed','checks':31,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

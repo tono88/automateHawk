@@ -1,63 +1,13 @@
-# Carga local mediante las pantallas de Oracle
+# Carga de Oracle por pantallas
 
-## Estado verificado
+El despliegue actual utiliza login por pantalla, cartera global y permisos persistentes. Iniciar los tres servicios con `docker compose up --build -d`, ingresar en el portal y utilizar Actualizar desde Oracle o Completar datos de la cartera. El trabajador interno ejecuta las solicitudes con el contexto aislado del usuario. No se requiere acceso a APIs de Oracle.
 
-Se ejecutó la lectura automatizada de las pantallas de oportunidades y se cargaron 120 filas al portal local. Los registros reales nunca se escribieron en archivos, fixtures, bitácoras del proyecto ni Git. La consulta no guardó ni modificó registros en Oracle.
+La primera entrada sin permisos vigentes solicita una lectura; las entradas posteriores reutilizan permisos hasta su vencimiento. La navegación normal usa PostgreSQL. La consulta predeterminada es Todos los registros que puedo ver, oportunidades abiertas del año actual, con un máximo de 1,000 filas por exportación. No equivale a una sincronización certificada de todo el CRM. Los campos no leídos y la ausencia de una fila en una carga parcial no acreditan una revocación ni un borrado.
 
-El alcance es **todos los registros que esta cuenta puede ver, oportunidades abiertas, año actual**. La consulta inicial por propietario y trimestre no representaba ese alcance. Se aplican los filtros desde la búsqueda avanzada de la interfaz, respetando los permisos existentes.
+La carga masiva usa la acción Acciones → Exportar de la lista de Oracle. El archivo HTML de Excel se procesa en memoria y se elimina del área temporal en memoria del trabajador. Solo se incorporan las columnas permitidas, excluyendo el correo del responsable. El lector deduplica por número oficial de oportunidad; no usa APIs de Oracle. La lectura por desplazamiento se conserva como referencia del recorrido. El detalle se abre por ese número, se expanden módulos y se consultan las actividades visibles. Cada resultado se persiste antes de continuar. La carga por lotes cede el turno entre expedientes para permitir otras consultas y escrituras.
 
-El listado es virtual: Oracle va incorporando filas al desplazarlo. El lector recorre la tabla, reúne las filas y deduplica por Número de oportunidad. El máximo inicial del trabajador es 120 oportunidades por carga. Aunque llegue al final visible, esta versión sigue declarando la carga como parcial porque no puede certificar un total global de Oracle.
+El servidor bloquea la importación directa, tickets y reclamación de trabajos desde clientes autenticados. El antiguo ejecutor independiente y el adaptador CUA se conservan como referencia del recorrido, pero no son el mecanismo de carga del despliegue autenticado. El secreto de comunicación del trabajador se genera fuera de Git y su servicio no publica puertos.
 
-## Uso
+Los fallos conservan la copia anterior. Una sesión vencida exige ingresar de nuevo; no se conservan contraseñas para repetir el acceso. La visibilidad se limita a permisos vigentes comprobados en Oracle. La copia global puede conservar datos que esa persona no pueda consultar.
 
-Abrir **Datos de Oracle** en el portal local y pulsar **Cargar desde Oracle** cuando el trabajador figure conectado. La pantalla se actualiza al terminar y muestra alcance, hora de carga y resultado. El botón se deshabilita cuando el trabajador está desconectado o ya hay una consulta en curso.
-
-El trabajador necesita una sesión vigente en el navegador. En el navegador integrado, las acciones deben ejecutarse dentro de una llamada activa del entorno: no es un servicio autónomo que siga trabajando después de cerrar esta interacción. El adaptador integrado permite ejecutar una carga durante el trabajo asistido. Para atender futuras solicitudes del botón de forma autónoma se necesita mantener en ejecución el trabajador independiente. Después de cerrar la sesión o reiniciar la aplicación puede ser necesario volver a iniciar sesión. No se guarda una contraseña ni un estado autenticado en el repositorio. La copia actual se conserva en PostgreSQL: ver [persistencia](postgresql.md) y [sincronización](sincronizacion.md).
-
-## Trabajador independiente opcional
-
-La implementación también incluye un ejecutor Playwright para no depender del navegador integrado. Requiere Node.js compatible con Playwright y sus dependencias:
-
-```sh
-npm install
-npx playwright install chromium
-```
-
-Definir `ORACLE_URL` en el entorno con la dirección institucional normal, sin usuario, contraseña ni parámetros de sesión. Opcionalmente definir `HUB_URL` con el destino local, por defecto `http://127.0.0.1:8765`. Después:
-
-```sh
-npm run oracle-worker
-```
-
-Se abre una ventana de navegador para iniciar sesión directamente en Oracle. El trabajador espera solicitudes del botón del portal. La autenticación permanece en un contexto efímero: no genera archivos de sesión, capturas, vídeos ni trazas. No automatiza ni evita MFA.
-
-El núcleo de lectura y el adaptador del navegador integrado se validaron con Oracle. El ejecutor Playwright independiente comparte ese núcleo, pero **su autenticación y recorrido completo no se han probado en esta entrega**. PostgreSQL funciona en Docker; el trabajador independiente se ejecuta en el equipo anfitrión.
-
-## Flujo de datos
-
-Botón local → solicitud en memoria → trabajador → navegación y filtros de Oracle → lectura de la tabla visible y desplazamiento → selección de campos → permiso local de carga de un solo uso → sustitución atómica del modelo de lectura → actualización de la pantalla.
-
-La entrega al servidor utiliza exclusivamente loopback. El trabajador no llama API de Oracle ni inspecciona su red, tokens o estado interno. No escribe una exportación intermedia; entrega los valores al servidor, que los persiste en PostgreSQL cuando está configurado.
-
-## Separación y límites
-
-- La sección Oracle es de solo consulta. Sus registros no pasan por los formularios del demo.
-- El demo mantiene sus 60 contactos sintéticos y sus propias operaciones.
-- Cada fila real representa una oportunidad, no una persona única. No se unen personas por nombre.
-- La carga permite nombre del contacto, número y nombre de oportunidad, cuenta, etapa, estado, responsable, segmento, teléfono y fechas visibles. Se excluye el correo del responsable porque no es el correo del aspirante.
-- No se infieren ciclo, carrera, pagos, expediente, pruebas, resolución académica ni matrícula desde la etapa de ventas. Esos campos requieren una lectura posterior del detalle y su mapeo confirmado.
-- Si la lectura está vacía, la estructura cambia o la sesión falla, se conserva la carga anterior y se indica el fallo. No se muestra una consulta fallida como una cartera vacía actualizada.
-- Con PostgreSQL configurado, reiniciar recupera la copia y sus detalles. El antiguo modo de memoria permanece solo como alternativa de pruebas.
-- El portal sigue siendo local, sin acceso remoto ni autenticación multiusuario. No publicarlo en red ni usarlo como servicio institucional hasta implementar los controles correspondientes.
-
-## Referencias técnicas
-
-[Documentación de Playwright](https://playwright.dev/docs/intro) y [consideraciones de autenticación](https://playwright.dev/docs/auth). Los archivos autenticados pueden contener material sensible; esta implementación evita crearlos.
-
-## Consulta ampliada por lotes
-
-El botón «Completar datos de la cartera» solicita los detalles que faltan en la copia importada. Abre cada oportunidad, expande los módulos y consulta actividades; entrega cada resultado directamente a PostgreSQL antes de pasar al siguiente. Al volver a solicitar la carga tras un fallo o reinicio, se seleccionan únicamente los detalles que aún no se recibieron. La cola activa es temporal; el avance se conserva mediante los detalles persistidos.
-
-El lector reutiliza la lista y, cuando el registro no está renderizado, agrega el criterio «Número de oportunidad» de la búsqueda avanzada. No usa el nombre para correlacionar registros. Los controles de espera leen el documento de nuevo porque ADF reemplaza las tablas y puede conservar paneles anteriores ocultos. No guarda cambios de oportunidades ni preferencias de búsqueda.
-
-Una consulta de detalle sigue siendo parcial: solo certifica los campos mapeados y las actividades visibles, hasta 100 filas. No prueba la inexistencia de otras relaciones ni confirma pagos. El botón no amplía por sí solo el conjunto original de 120 oportunidades ni refresca detalles ya existentes; para actualizar uno se usa su consulta individual.
+Ver [acceso y permisos](acceso-multiusuario.md), [guardado y roadmap](roadmap.md) y [actividades y prueba oficial](actividades-y-prueba-oficial.md). Los guardados escalares son un escritor piloto, pendiente de la prueba institucional real; las actividades siguen siendo locales.

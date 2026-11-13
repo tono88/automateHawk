@@ -20,7 +20,7 @@ La fecha y hora de citas e informes se interpretan con America/Guatemala. Se val
 
 ## Preparación para la prueba oficial
 
-La interfaz incluye una revisión del formulario destino y de los requisitos pendientes. Esta entrega prepara los formularios y el almacenamiento; todavía no contiene un escritor de Oracle habilitado. La prueba de guardado real requiere implementar y validar el recorrido de escritura antes de ofrecer un botón de envío. No basta con que el formulario local se guarde correctamente.
+La interfaz incluye una revisión del formulario destino y de los requisitos pendientes. Esta entrega prepara los formularios y el almacenamiento; todavía no contiene un escritor de actividades de Oracle habilitado. La prueba de guardado real requiere implementar y validar el recorrido de escritura antes de ofrecer un botón de envío. No basta con que el formulario local se guarde correctamente.
 
 1. Los responsables eligen cuenta, ambiente y caso de prueba autorizado, además de las notificaciones permitidas y del método de cancelación o limpieza.
 2. Se resuelven contacto, cuenta y oportunidad por identificadores oficiales; no se unen por nombres. Para tareas se confirma cómo asociar la oportunidad desde la operación admitida por Oracle.
@@ -30,4 +30,4 @@ La interfaz incluye una revisión del formulario destino y de los requisitos pen
 6. Se prueba rechazo por permisos, conflicto, sesión vencida y fallo después de guardar. Ante resultado incierto se reconcilia antes de reintentar; no se vuelve a crear a ciegas.
 7. El registro local solo podrá cambiar a confirmado tras esa relectura, conservando ID de Oracle, actor verificado y resultado. Nunca se borrará automáticamente una actividad real como limpieza.
 
-Criterio de salida: responsables validan cada tipo y su efecto sobre agenda y notificaciones; el escritor pasa estas comprobaciones. SSO y autorización multiusuario siguen siendo requisitos independientes del despliegue institucional.
+Criterio de salida: responsables validan cada tipo y su efecto sobre agenda y notificaciones; el escritor pasa estas comprobaciones. El acceso por pantallas y los permisos persistentes ya existen como piloto; SSO, MFA y la validación institucional multiusuario siguen siendo requisitos independientes.

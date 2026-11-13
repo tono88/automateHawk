@@ -16,10 +16,10 @@ PRIVATE=Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'.local/share')))/'au
 
 def contents_signature(connection):
     signature={}
-    names=connection.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='hub' AND table_type='BASE TABLE' ORDER BY table_name").fetchall()
-    for (name,) in names:
-        query=sql.SQL("SELECT count(*),md5(coalesce(string_agg(row_to_json(t)::text,E'\\n' ORDER BY row_to_json(t)::text),'')) FROM hub.{} t").format(sql.Identifier(name))
-        signature[name]=connection.execute(query).fetchone()
+    names=connection.execute("SELECT table_schema,table_name FROM information_schema.tables WHERE (table_schema='hub' OR table_schema ~ '^hub_u_[a-f0-9]{32}$') AND table_type='BASE TABLE' ORDER BY table_schema,table_name").fetchall()
+    for schema,name in names:
+        query=sql.SQL("SELECT count(*),md5(coalesce(string_agg(row_to_json(t)::text,E'\\n' ORDER BY row_to_json(t)::text),'')) FROM {}.{} t").format(sql.Identifier(schema),sql.Identifier(name))
+        signature[schema+'.'+name]=connection.execute(query).fetchone()
     return signature
 
 def main():

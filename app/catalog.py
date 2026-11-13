@@ -31,7 +31,7 @@ VIEWS=[
  {'id':'payments','title':'Pagos y matrícula','description':'Importe y campos de seguimiento; no acredita un pago.'},
  {'id':'financial','title':'Asistencia económica','description':'Solicitud y estado visibles en Oracle.'},
  {'id':'enrollment','title':'Matrícula comercial','description':'Etapas 05 y 06; pendiente conciliación con Campus.'},
- {'id':'changes','title':'Cambios pendientes','description':'Propuestas locales separadas del valor confirmado en Oracle.'},
+ {'id':'changes','title':'Cambios en Oracle','description':'Envío, conflictos y confirmación de los cambios solicitados.'},
  {'id':'sync','title':'Sincronización','description':'Frecuencia, frescura y estado del trabajador.'},
  {'id':'roadmap','title':'Roadmap','description':'Evolución operativa e inteligencia de negocio futura.'}
 ]

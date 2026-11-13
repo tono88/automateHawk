@@ -22,6 +22,8 @@ def main():
     admin_file=PRIVATE/'postgres-admin.secret';app_file=PRIVATE/'postgres-app.secret'
     for path in [admin_file,app_file]:
         if not path.exists():path.write_text(secrets.token_urlsafe(36),encoding='utf-8')
+    worker_file=PRIVATE/'worker.secret'
+    if not worker_file.exists():worker_file.write_text(secrets.token_urlsafe(48),encoding='utf-8')
     admin=admin_file.read_text().strip();app=app_file.read_text().strip()
     host_dsn=f'postgresql://hub_app:{quote(app)}@127.0.0.1:55432/automatehawk'
     docker_dsn=f'postgresql://hub_app:{quote(app)}@postgres:5432/automatehawk'
@@ -30,8 +32,8 @@ def main():
     env=ROOT/'.env'
     if env.exists() and 'HUB_PG_ADMIN_SECRET_FILE' not in env.read_text():raise SystemExit('Existe un .env ajeno a esta configuración; no se modificó.')
     existing=env.read_text(encoding='utf-8').splitlines() if env.exists() else []
-    preserve=[line for line in existing if not line.startswith(('HUB_PG_ADMIN_SECRET_FILE=','HUB_PG_DOCKER_DSN_FILE='))]
-    env.write_text('\n'.join(preserve+[f'HUB_PG_ADMIN_SECRET_FILE={admin_file.as_posix()}',f'HUB_PG_DOCKER_DSN_FILE={(PRIVATE/"database-docker.dsn").as_posix()}'])+'\n',encoding='utf-8')
+    preserve=[line for line in existing if not line.startswith(('HUB_PG_ADMIN_SECRET_FILE=','HUB_PG_DOCKER_DSN_FILE=','HUB_WORKER_SECRET_FILE='))]
+    env.write_text('\n'.join(preserve+[f'HUB_WORKER_SECRET_FILE={worker_file.as_posix()}',f'HUB_PG_ADMIN_SECRET_FILE={admin_file.as_posix()}',f'HUB_PG_DOCKER_DSN_FILE={(PRIVATE/"database-docker.dsn").as_posix()}'])+'\n',encoding='utf-8')
     run(['docker','compose','up','-d','postgres'])
     import psycopg
     from psycopg import sql
@@ -44,7 +46,7 @@ def main():
     with c:
         if not c.execute("SELECT 1 FROM pg_roles WHERE rolname='hub_app'").fetchone():
             c.execute(sql.SQL('CREATE ROLE hub_app LOGIN PASSWORD {}').format(sql.Literal(app)))
-        c.execute('GRANT CONNECT ON DATABASE automatehawk TO hub_app')
+        c.execute('GRANT CONNECT, CREATE ON DATABASE automatehawk TO hub_app')
         c.execute('CREATE SCHEMA IF NOT EXISTS hub AUTHORIZATION hub_app')
     print('PostgreSQL local preparado en 127.0.0.1:55432. Configuración privada fuera de Git.')
 

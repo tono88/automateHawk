@@ -36,3 +36,5 @@ El respaldo `pg_dump` se escribe en la carpeta privada `automateHawk/backups`, f
 El volumen y el respaldo del mismo equipo protegen frente a algunos fallos, pero no constituyen alta disponibilidad ni protección frente a pérdida del dispositivo. La copia externa cifrada, retención, automatización de respaldos, RPO/RTO y restauraciones periódicas forman parte de la etapa institucional. No publicar estos respaldos ni incorporarlos al repositorio.
 
 Fuente oficial: [PostgreSQL Backup and Restore](https://www.postgresql.org/docs/current/backup.html).
+
+La copia activa es global en hub. user_permissions conserva permisos por identidad con vencimiento. La cuenta técnica tiene CREATE en esta base para ejecutar migraciones, sin ser superusuario; el cliente no puede elegir esquemas ni enviar SQL. Los respaldos verifican todas las tablas activas y cualquier esquema previo del piloto.

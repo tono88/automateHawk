@@ -1,8 +1,7 @@
-import os
+"""Start the authenticated local stack; do not expose the browser gateway on the host."""
 from pathlib import Path
-import runpy
-
-private=Path(os.environ.get('LOCALAPPDATA',str(Path.home()/'.local/share')))/'automateHawk'
-os.environ['HUB_DATABASE_DSN_FILE']=str(private/'database-host.dsn')
-os.environ.setdefault('HUB_LOCAL_ROLE','editor')
-runpy.run_module('app.server',run_name='__main__')
+import subprocess
+root=Path(__file__).resolve().parents[1]
+if not (root/'.env').exists():raise SystemExit('Prepara PostgreSQL y secretos con python -m scripts.provision_local.')
+subprocess.run(['docker','compose','up','--build','-d'],cwd=root,check=True)
+print('Portal local: http://127.0.0.1:8765. Inicia sesión con Oracle.')

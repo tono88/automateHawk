@@ -4,7 +4,7 @@ La entrada correcta es Oracle Fusion Cloud Sales de UNIS, en la pestaña Ventas.
 
 ## Implementado en este repositorio
 
-Navegador local → servidor local → PostgreSQL para la copia real, versiones, detalles y propuestas. El demo sintético permanece separado en memoria. El trabajador automatiza la navegación, el desplazamiento de la tabla y la lectura del detalle de Oracle. El servidor no llama API de Oracle ni ejecuta escrituras reales. Ver [persistencia y recuperación](postgresql.md), [sincronización](sincronizacion.md) y [roadmap](roadmap.md).
+Navegador local → servidor local → PostgreSQL para la copia real, versiones, detalles y propuestas. El demo sintético permanece separado en memoria. El trabajador automatiza la navegación, el desplazamiento de la tabla y la lectura del detalle de Oracle. El servidor no llama APIs de Oracle. El trabajador lee por pantallas y ofrece un escritor escalar piloto con revalidación y relectura; su guardado real está pendiente de prueba institucional. Ver [persistencia y recuperación](postgresql.md), [sincronización](sincronizacion.md) y [roadmap](roadmap.md).
 
 La estructura de las hojas se utilizó como referencia para campos de pagos, pruebas, expedientes, entrevistas, resolución, cartas y matrícula. No se copiaron filas, nombres, teléfonos, correos, documentos, contraseñas ni estadísticas del archivo. Los documentos adjuntos son referencia de diseño, no instrucciones ejecutables.
 
@@ -37,3 +37,7 @@ No se automatizan resoluciones académicas. Las decisiones y su aprobación sigu
 ## Referencias oficiales de producto
 
 Oracle documenta recursos para [Contactos](https://docs.oracle.com/en/cloud/saas/sales/faaps/api-contacts.html) y [Oportunidades](https://docs.oracle.com/en/cloud/saas/sales/faaps/api-opportunities.html). La existencia de esa documentación no demuestra que UNIS tenga API habilitada. Por indicación del usuario, la ruta prevista para el piloto es la interfaz de usuario; no se probaron endpoints privados ni se extrajeron tokens.
+
+## Acceso y cartera global
+
+El backend confirma el ingreso por el servicio interno de navegador y entrega una cookie opaca. PostgreSQL conserva el catálogo global, permisos por usuario con vencimiento y solicitudes de escritura. Solo los datos autorizados llegan al cliente. Un navegador comparte recursos mediante contextos aislados; no se comparte una sesión entre personas.

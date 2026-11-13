@@ -27,6 +27,7 @@ class OracleReadStore:
         self.batch_done=set()
         self.repository=repository
         self.role=role
+        self.actor='local-editor'
         self.details={}
         self.settings={'enabled':False,'interval_minutes':15,'detail_ttl_minutes':30,'reconcile_hours':24}
         if repository:
@@ -120,7 +121,7 @@ class OracleReadStore:
 
     def status(self):
         with self.lock:
-            return deepcopy(dict(source='oracle-ui',read_only=True,partial=True,count=len(self.records),loaded_at=self.loaded_at,
+            return deepcopy(dict(source='oracle-ui',read_only=not getattr(self,'write_enabled',False),partial=True,count=len(self.records),loaded_at=self.loaded_at,
                                  scope=self.scope,job=self.job,storage='postgresql' if self.repository else 'memory',worker_required=True,
                                  worker_online=bool(self.worker_seen and monotonic()-self.worker_seen<90),
                                  role=self.role,can_propose=self.role=='editor' and bool(self.repository),settings=self.settings,
@@ -168,7 +169,7 @@ class OracleReadStore:
         if not detail or not detail.get('capabilities',{}).get(field):raise PermissionError()
         loaded=datetime.fromisoformat(detail['loaded_at'])
         if (datetime.now(timezone.utc)-loaded).total_seconds()>1800:raise ConflictError('Vuelve a consultar los permisos del detalle antes de editar.')
-        return self.repository.propose(number,field,value,body.get('version'),'local-editor')
+        return self.repository.propose(number,field,value,body.get('version'),self.actor)
 
     def save_settings(self,body):
         if self.role!='editor' or not self.repository:raise PermissionError()

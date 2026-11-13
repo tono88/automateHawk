@@ -1,37 +1,49 @@
-# Acceso multiusuario y sesiones de Oracle
+# Acceso por pantalla de Oracle
 
-## Decisión propuesta
+## Implementado en el piloto local
 
-El despliegue institucional debe usar el inicio de sesión de Oracle mediante SSO. La persona escribe su contraseña directamente en Oracle; automateHawk recibe una identidad verificada y una sesión temporal. No se deben pedir ni almacenar contraseñas de Oracle en el Hub, el navegador local, PostgreSQL, archivos de configuración o Git.
+El portal pide usuario y contraseña de Oracle y los utiliza una sola vez para llenar el formulario institucional de ingreso en un contexto nuevo y aislado. Oracle valida las credenciales por su pantalla; no se llaman APIs de Oracle ni se verifica una contraseña contra una copia local. El ingreso se confirma únicamente al regresar al portal institucional y observar el acceso autenticado a Página Inicial. Esto no es SSO federado del Hub.
 
-La sesión del cliente contiene solo un identificador opaco en una cookie HttpOnly, Secure y SameSite, con vencimiento y cierre de sesión. El servidor verifica esa sesión en cada operación y conserva temporalmente la información necesaria para validarla. Una cookie, nombre de usuario o rol enviados libremente por el cliente no acreditan identidad ni permisos. Los tokens y cookies de Oracle también son secretos: deben tener caducidad, aislamiento y no aparecer en registros o respaldos.
+La contraseña pasa transitoriamente por el servidor y el trabajador de navegador. No se guarda en PostgreSQL, archivos, Git, registros de solicitudes, capturas, vídeos ni trazas. Las referencias se liberan al finalizar la solicitud; no se promete borrado físico inmediato de la memoria administrada. Las cookies de Oracle permanecen en el contexto temporal. El contenedor utiliza /tmp en memoria y no exporta perfiles o storageState.
 
-Oracle documenta autorización delegada mediante flujo de código de autorización para Sales. Su configuración requiere que TI registre la aplicación y valide el dominio de identidad, redirecciones, ámbitos y compatibilidad de la instalación. SSO identifica a la persona, pero por sí solo no concede acceso al CRM ni proporciona una sesión de navegación de Fusion. El acceso delegado a datos y la autorización deben configurarse y probarse por separado.
+Solo se permiten formularios POST hacia el portal de Fusion configurado y su dominio exacto de identidad institucional. No se aceptan destinos enviados por el cliente. Si cambia el formulario o el destino, el acceso se detiene. MFA, CAPTCHA, términos u otros desafíos no se resuelven ni omiten: ese recorrido adicional requiere implementación y validación específica; no se concede acceso al Hub mientras Oracle no confirme el ingreso.
 
-Fuentes oficiales: [OAuth para Sales](https://docs.oracle.com/en/cloud/saas/sales/faaps/configure_oauth.html), [configuración con IDCS o IAM](https://docs.oracle.com/en/cloud/saas/sales/faaps/Configure_OAuth_Using_Oracle_IDCS_or_IAM.html).
+## Sesión y recursos
 
-## Si la integración sigue siendo exclusivamente por pantallas
+El cliente recibe una cookie opaca HttpOnly y SameSite=Strict; no recibe las cookies de Oracle, tokens del trabajador ni roles elegibles. La sesión se verifica en el servidor. Vence tras 15 minutos de inactividad o un máximo de ocho horas. Las consultas automáticas de la interfaz no prolongan la inactividad. Cerrar sesión revoca el acceso y cierra el contexto. Reiniciar cualquiera de los servicios exige volver a ingresar.
 
-Un grupo limitado de procesos de navegador atiende una cola. Como punto de partida para medir el piloto: dos trabajadores concurrentes; se ajustará con pruebas de carga y las reglas de Oracle. Cada usuario tiene un contexto aislado con sus propias cookies y permisos; nunca se comparte una sesión entre personas. Se abre una página solamente durante una consulta o modificación, se libera al terminar y se expira el contexto por inactividad. No se guarda el estado de sesión en disco. Al expirar, la persona debe volver a autenticarse directamente en Oracle.
+Un navegador Chromium atiende como máximo dos tareas simultáneas y ocho contextos activos en este piloto. Cada persona usa un contexto propio, sin compartir cookies; las páginas se cierran después de cada trabajo. Al llegar al límite se informa que debe esperar. Son límites iniciales, pendientes de medición de carga. La expiración libera contextos y sesiones, sin borrar los datos de negocio persistidos.
 
-Esto evita un navegador completo permanentemente abierto por cada usuario conectado, aunque los contextos y páginas activos siguen consumiendo recursos. Concurrencia limitada implica espera cuando hay muchas tareas. El ingreso SSO del Hub no crea automáticamente el contexto de Fusion: el vínculo entre ambos requiere validación institucional; no se copiarán cookies del navegador personal ni se guardarán contraseñas para recrearlo.
+El servicio de navegador está únicamente en la red interna de Docker, protegido con un secreto propio fuera de Git y sin puerto publicado. El portal y PostgreSQL continúan publicados solo en loopback. La cookie no usa Secure en este acceso HTTP exclusivamente local; antes de una publicación institucional se requieren HTTPS, cookie Secure, origen público validado, límites y pruebas de carga. No debe exponerse la configuración local directamente a una red compartida.
 
-Un trabajador con una cuenta compartida no reproduce los permisos de cada persona. No se usará la cartera de esa cuenta como autorización para todos.
+## Cartera global y permisos persistentes
 
-## Copia de datos y permisos
+PostgreSQL mantiene una sola copia canónica en el esquema hub. La tabla user_permissions conserva por usuario y oportunidad los campos visibles, controles editables, acceso a actividades y fechas de comprobación y vencimiento. El cliente no elige el rol ni los permisos. Las consultas y agregados aplican el permiso en el servidor; cambiar filtros o IDs no concede acceso.
 
-PostgreSQL conserva los valores reales y su historial fuera del repositorio. Cada consulta, búsqueda, detalle, contador y exportación debe aplicar permisos por usuario y registro en el servidor. No basta con filtrar en la pantalla ni con comparar el nombre del asesor. Se necesitan identificadores oficiales y reglas autorizadas por TI; ante permisos vencidos o no comprobados, el servidor deniega el acceso. La invalidación de permisos debe retirar el acceso a la copia, aunque el dato continúe almacenado para fines autorizados.
+La lista abre sin filtros de asesor, ciclo o etapa: cada persona ve todas las oportunidades globales disponibles para las que Oracle le haya confirmado acceso. Que exista un registro en la copia global no autoriza automáticamente a todos a consultarlo. El alcance actual sigue siendo parcial: oportunidades abiertas del año actual y hasta 1,000 filas por exportación, sin certificar todo el CRM.
 
-Cada escritura requerirá autorización vigente en Oracle bajo la identidad de la persona, relectura del registro, control de conflicto, ejecución y confirmación por relectura. Las propuestas locales actuales no se consideran escrituras en Oracle.
+Los permisos básicos se reutilizan durante una hora y los campos del detalle durante 30 minutos, incluso entre ingresos. Al vencer se ocultan hasta renovar la consulta con Oracle; una consulta parcial no revoca registros ausentes antes del vencimiento. No hay detección instantánea de una revocación hecha en Oracle fuera del portal. El inicio de sesión siempre debe confirmar la identidad por pantalla, aunque los permisos estén en caché. No se guardan contraseñas para renovar la sesión automáticamente.
 
-## Estado de esta entrega
+Cada nuevo ingreso carga inmediatamente la cartera con permisos vigentes; si no los hay, inicia su consulta en Oracle. Los cambios globales aparecen para los demás usuarios autorizados al refrescar su copia. Los campos que una cuenta no pudo observar no sobrescriben ni exponen los campos globales a los que no tiene permiso.
 
-La instalación actual sigue limitada a este equipo. Conserva un perfil local configurado en el servidor y una copia obtenida con una cuenta de Oracle. No implementa todavía SSO, aislamiento de carteras o un grupo multiusuario de navegadores. No debe publicarse a varios usuarios antes de completar estos controles. Esta propuesta no introduce una pantalla de acceso que aparente verificar credenciales sin hacerlo.
+El demo se separa por sesión; las propuestas y escrituras se atribuyen al usuario confirmado. Las actividades locales pertenecen a la copia global, con consulta limitada a las oportunidades autorizadas y a su creador o a un permiso de actividades vigente. Su edición se limita al creador mientras no se valide una delegación específica. La copia previa de hub se conserva; los esquemas de usuario que existieran de la etapa anterior quedan sin uso por la aplicación y no se borran automáticamente. Los respaldos incluyen y verifican ambos conjuntos.
 
-## Próximas entregas
+## Envío de modificaciones
 
-1. TI confirma proveedor de identidad y modalidad de autorización delegada disponible.
-2. SSO, sesiones temporales, cierre de sesión e invalidación; pruebas con lector, editor y usuario sin acceso.
-3. Permisos por registro y campo sobre la copia, filtros y agregados; bitácora por identidad verificada.
-4. Grupo de trabajadores aislados, límites, vencimiento y recuperación de sesión; medición de memoria, latencia y concurrencia.
-5. Escrituras verificadas por operación. Node-RED y automatizaciones de procesos quedan pendientes después de estabilizar consulta y autorización.
+Guardar en la lista solicita el envío de nombre de oportunidad, etapa comercial, probabilidad o fecha de cierre. Se persiste una solicitud con valor anterior, nuevo valor, versión y actor, y se procesa con la sesión de Oracle de esa persona. Antes del guardado se vuelve a abrir el registro, se comprueba el control habilitado y se compara el valor actual. Una modificación externa produce conflicto; un cambio adicional inducido por el formulario detiene el envío para revisión. Después de Guardar y Cerrar se abre de nuevo y se confirma el resultado.
+
+Solo esa relectura permite actualizar el valor global confirmado. Las escrituras al mismo registro se serializan. No se reintenta un resultado incierto ni se vuelve a crear una solicitud duplicada mientras quede pendiente de verificar. La vista Cambios en Oracle ofrece una verificación de solo lectura para resolver el resultado. Reiniciar el servidor deja los envíos en curso como inciertos, sin reenviarlos automáticamente.
+
+Este escritor es piloto: se prueban sus validaciones y persistencia con datos ficticios, pero el guardado real debe probarse oficialmente con los responsables. No se modificaron registros reales durante su desarrollo. Citas, tareas e informes permanecen locales: sus relaciones, catálogos, permisos y efectos de agenda requieren el recorrido específico descrito en actividades-y-prueba-oficial.md. No se anuncian como enviados.
+
+## Ejecución
+
+Preparar los secretos privados con `python -m scripts.provision_local`; después ejecutar `docker compose up --build -d`. El servicio oracle-worker instala Playwright y Chromium desde sus fuentes oficiales. No utilizar el trabajador antiguo sin autenticación para cargar este modo: los endpoints de importación directa, tickets y reclamación de trabajos se bloquean para clientes del portal.
+
+El modo de pruebas sin autenticación solo se admite explícitamente con HUB_MODE=demo y HUB_AUTH_MODE=disabled; no es un modo de despliegue institucional. Las pruebas unitarias y de PostgreSQL utilizan cuentas, filas y contraseñas ficticias. Las pruebas reales no guardan en Oracle.
+
+## Pendientes institucionales
+
+MFA y recuperación interactiva de desafíos; autorización institucional por identidad y roles; HTTPS; pruebas con responsables y varias cuentas reales; métricas de carga; validación oficial del escritor piloto y envío de actividades. La alternativa futura de SSO y autorización delegada requiere registro de la aplicación por TI y no es necesaria para este piloto por pantallas. Node-RED continúa pendiente.
+
+Referencias: [contextos aislados de Playwright](https://playwright.dev/docs/browser-contexts), [riesgos de persistir estado de autenticación](https://playwright.dev/docs/auth), [OAuth de Oracle Sales para una integración futura](https://docs.oracle.com/en/cloud/saas/sales/faaps/configure_oauth.html).

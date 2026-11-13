@@ -8,9 +8,9 @@ El objetivo es una interfaz operativa de admisiones similar al Excel del equipo,
 |---|---|---|---|
 | 1 Persistencia y recuperación | PostgreSQL local, historial de observaciones, respaldo y restauración | Implementado y verificado localmente | Reiniciar sin perder datos; restaurar una copia y comparar registros |
 | 2 Interfaz de trabajo | Vistas tipo Excel, filtros por asesor/ciclo/etapa/fecha, paneles por módulo y permisos de campo observados | Implementado como piloto; extracción ampliada validada en una muestra | Mapear y probar cada columna, fecha, ciclo y entidad con usuarios del proceso |
-| 3 Gestión sobre Oracle | Edición en lista o formulario, cola, aprobación y escritura verificada | Cola y propuestas locales implementadas; escrituras reales pendientes | Para cada operación: permiso válido, ID estable, control de conflicto, idempotencia, guardado y relectura |
-| 4 Sincronización operativa | Lecturas temporizadas, detalle bajo demanda, reconciliación y recuperación de sesión | Temporizador y solicitudes implementados; ejecución autónoma y cobertura completa pendientes | Medir duración, carga y errores; probar vencimiento de sesión, reinicios y consultas completas |
-| 5 Operación institucional | SSO, cartera por usuario, mínimos privilegios, secretos, soporte, monitoreo y recuperación externa | Pendiente | Validar autorización institucional por rol y conjunto de datos; pruebas de restauración y operación |
+| 3 Gestión sobre Oracle | Edición en lista o formulario, cola, aprobación y escritura verificada | Cola y escritor escalar piloto implementados; prueba institucional real pendiente | Para cada operación: permiso válido, ID estable, control de conflicto, idempotencia, guardado y relectura |
+| 4 Sincronización operativa | Lecturas temporizadas, detalle bajo demanda, reconciliación y recuperación de sesión | Temporizador y trabajador por sesión implementados; cobertura completa pendiente | Medir duración, carga y errores; probar vencimiento de sesión, reinicios y consultas completas |
+| 5 Operación institucional | SSO, cartera por usuario, mínimos privilegios, secretos, soporte, monitoreo y recuperación externa | Login por pantalla y permisos persistentes implementados; SSO y publicación pendientes | Validar autorización institucional por rol y conjunto de datos; pruebas de restauración y operación |
 | 6 Inteligencia de negocio | Indicadores históricos y tableros confiables | Solo roadmap | Datos completos por cohorte y definiciones aprobadas; reconciliación de CRM, Campus y pagos |
 
 ## Vistas derivadas de la estructura del Excel
@@ -33,9 +33,9 @@ En automateHawk estas familias se representan como vistas de una misma copia nor
 
 El perfil local se configura en el servidor; no se selecciona libremente desde la pantalla. El lector consulta. El editor puede registrar propuestas únicamente para campos habilitados por el catálogo y observados como editables en una consulta reciente de Oracle.
 
-Esta entrega permite propuestas de nombre, etapa, probabilidad y fecha de cierre. Se almacenan con el valor original, versión, nuevo valor, autor y estado. No se sustituyen los valores confirmados y no se aplica ninguna escritura real automáticamente. Si Oracle cambia el mismo campo, la propuesta se marca en conflicto. Los campos con formulario se abren por módulo; los campos simples pueden proponer cambios dentro de la lista.
+Esta entrega permite enviar cambios de nombre, etapa, probabilidad y fecha de cierre mediante el escritor piloto por pantallas. Se almacenan con el valor original, versión, nuevo valor, autor y estado. Los valores confirmados solo se sustituyen tras releer Oracle después de un envío solicitado explícitamente por el usuario. Si Oracle cambia el mismo campo, la propuesta se marca en conflicto. Los campos con formulario se abren por módulo; los campos simples pueden proponer cambios dentro de la lista.
 
-El siguiente incremento debe implementar un escritor por operación, revalidar permisos inmediatamente antes de guardar, pedir aprobación cuando corresponda y volver a leer el resultado. No se habilitarán escrituras genéricas sobre cualquier etiqueta de la pantalla.
+El escritor escalar revalida permisos, compara el valor actual y relee el resultado; requiere la prueba oficial de guardado con responsables. Los escritores de actividades y otros módulos siguen pendientes. No se habilitarán escrituras genéricas sobre cualquier etiqueta de la pantalla.
 
 El perfil local del piloto no equivale a SSO ni a permisos multiusuario de Oracle. La correspondencia de identidad y restricciones por cartera es un requisito de la etapa institucional.
 
@@ -54,3 +54,9 @@ La propuesta de identidad, sesiones y recursos compartidos se detalla en [acceso
 ## Actividades locales
 
 Implementados los formularios de seguimiento, cita e informe de interacción sobre la cartera real, con persistencia separada, edición por versión y estados locales. Los accesos y campos de creación se volvieron a verificar en Oracle cancelando los formularios. La [prueba oficial de actividades](actividades-y-prueba-oficial.md) define los vínculos, catálogos, permisos y confirmaciones pendientes para habilitar el escritor real.
+
+## Cartera global y permisos
+
+La copia activa es única en PostgreSQL, con permisos por usuario y campo guardados con vencimiento. La lista comienza sin filtros por responsable. El login verifica la identidad por pantalla y reutiliza permisos vigentes; el escritor vuelve a verificarlos al guardar. Los detalles de funcionamiento y las limitaciones están en [acceso multiusuario](acceso-multiusuario.md).
+
+La carga masiva autenticada usa la acción Exportar de Oracle y procesa su HTML de Excel en memoria, hasta 1,000 filas por exportación. La lectura por desplazamiento permanece como referencia. La cobertura sigue limitada al filtro aplicado en Oracle; no se presenta como un volcado certificado de todo el CRM.

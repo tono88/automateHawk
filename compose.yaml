@@ -23,14 +23,36 @@ services:
       - "127.0.0.1:8765:8080"
     environment:
       HUB_MODE: local
+      HUB_AUTH_MODE: screen
+      HUB_WORKER_URL: http://oracle-worker:8767
+      HUB_WORKER_SECRET_FILE: /run/secrets/worker_secret
       HUB_DATABASE_DSN_FILE: /run/secrets/hub_database_dsn
       HUB_LOCAL_ROLE: ${HUB_LOCAL_ROLE:-reader}
     secrets:
       - hub_database_dsn
+      - worker_secret
     depends_on:
       postgres:
         condition: service_healthy
     read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+  oracle-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      ORACLE_LOGIN_ORIGIN: https://idcs-7352383b58144b88b6039c9d2de49434.identity.oraclecloud.com
+      ORACLE_URL: https://ehvs.fa.us6.oraclecloud.com/hcmUI/faces/FuseWelcome
+      HUB_WORKER_SECRET_FILE: /run/secrets/worker_secret
+    secrets:
+      - worker_secret
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    shm_size: 256mb
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
@@ -41,3 +63,6 @@ secrets:
     file: ${HUB_PG_ADMIN_SECRET_FILE:?Run scripts/provision_local.py first}
   hub_database_dsn:
     file: ${HUB_PG_DOCKER_DSN_FILE:?Run scripts/provision_local.py first}
+
+  worker_secret:
+    file: ${HUB_WORKER_SECRET_FILE:?Run scripts/provision_local.py first}

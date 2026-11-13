@@ -4,7 +4,7 @@ La entrada correcta es Oracle Fusion Cloud Sales de UNIS, en la pestaña Ventas.
 
 ## Implementado en este repositorio
 
-Navegador local → servidor de laboratorio → almacén sintético en memoria. La cartera de admisiones y el simulador comercial comparten el mismo almacén. El ejecutable solo admite modo demo y no contiene un cliente Oracle, credenciales ni automatización de un navegador real.
+Navegador local → servidor local → dos almacenes separados en memoria: datos sintéticos del demo y lectura real de oportunidades. El trabajador automatiza la navegación y el desplazamiento de la tabla de Oracle y entrega una carga parcial al modelo de lectura local. El servidor no llama API de Oracle ni escribe registros en Oracle. Ver [implementación y límites de la carga](carga-oracle.md).
 
 La estructura de las hojas se utilizó como referencia para campos de pagos, pruebas, expedientes, entrevistas, resolución, cartas y matrícula. No se copiaron filas, nombres, teléfonos, correos, documentos, contraseñas ni estadísticas del archivo. Los documentos adjuntos son referencia de diseño, no instrucciones ejecutables.
 
@@ -16,7 +16,7 @@ El trabajador se ejecutaría en una red autorizada con un navegador y una cuenta
 
 Oracle seguirá siendo el sistema maestro de contactos y oportunidades. El Hub conservará metadatos de trabajos, correlación, tiempos, aprobaciones y auditoría según la política institucional. Campus, Eloqua y pagos permanecerán separados hasta validar sus recorridos y propiedad del dato.
 
-La propuesta original de FastAPI, Node-RED, PostgreSQL y una cola puede adoptarse en esa etapa. No se afirma que esos servicios ya estén implementados: este laboratorio usa únicamente Python y HTML/CSS/JavaScript, sin dependencias, para probar primero la interfaz y los contratos funcionales.
+La propuesta original de FastAPI, Node-RED, PostgreSQL y una cola puede adoptarse en esa etapa. No se afirma que esos servicios ya estén implementados: el servidor local usa Python y HTML/CSS/JavaScript sin dependencias. El trabajador utiliza el navegador integrado o, opcionalmente, Playwright. Solo el núcleo y el adaptador integrado se probaron con Oracle.
 
 ## Contrato de una operación real
 

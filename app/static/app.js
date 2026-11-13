@@ -1,6 +1,6 @@
 'use strict';
 const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let snapshot,mode='hub',view='all',entity='contacts',page=1,editing=null;
+let snapshot,mode='live',view='all',entity='contacts',page=1,editing=null;
 let filters={q:'',faculty:'',owner:'',cycle:'',stage:''};
 const main=$('#main'),editor=$('#editor');
 const stageLabel=s=>(s||'Sin oportunidad').replace(/^\d+ - /,'');
@@ -42,5 +42,5 @@ $('#record-form').onsubmit=async e=>{e.preventDefault();const b=e.submitter;b.di
 $('#delete-record').onclick=async()=>{if(!editing.confirmDelete){editing.confirmDelete=true;$('#delete-record').textContent='Confirmar eliminación';$('#form-error').textContent='Se eliminará este registro sintético del simulador. Para continuar, pulsa Confirmar eliminación; puedes cancelar para conservarlo.';return;}try{await api(`/api/${editing.type}/${editing.id}`,'DELETE',{version:editing.version});editor.close();await refresh();notify('Registro de prueba eliminado.');}catch(e){$('#form-error').textContent=e.message;}};
 $('#close-editor').onclick=$('#cancel-editor').onclick=()=>editor.close();
 document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>{mode=b.dataset.mode;render();});
-function render(){document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));$('#breadcrumb').textContent={hub:'Vista general',oracle:'Simulador Oracle',audit:'Bitácora',guide:'Recorridos verificados'}[mode];({hub,oracle:oracleView,audit:auditView,guide})[mode]();}
+function render(){document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('active',b.dataset.mode===mode));$('#breadcrumb').textContent={live:'Datos de Oracle',hub:'Vista general demo',oracle:'Simulador Oracle',audit:'Bitácora',guide:'Recorridos verificados'}[mode];$('#environment-badge').textContent=mode==='live'?'ORACLE · SOLO CONSULTA':'ENTORNO DE PRUEBAS';({live:()=>window.UnisOracleLive.render(main),hub,oracle:oracleView,audit:auditView,guide})[mode]();}
 refresh().catch(e=>{main.innerHTML='<div class="empty">No se pudo cargar el laboratorio. Comprueba que el servidor siga activo.</div>';});

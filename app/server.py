@@ -46,6 +46,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/oracle/snapshot': return self.respond(200,ORACLE.snapshot())
         if path=='/api/oracle/catalog':return self.respond(200,{'views':VIEWS,'fields':{k:{'label':v[0],'module':v[1]} for k,v in DETAIL_FIELDS.items()},'edit_fields':sorted(EDIT_FIELDS)})
         if path=='/api/oracle/changes':return self.respond(200,{'changes':ORACLE.repository.changes() if ORACLE.repository else []})
+        if path=='/api/oracle/batch':return self.respond(200,ORACLE.batch())
         routes={'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/live.js':('operations.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
         if path not in routes: return self.respond(404,{'error':'Recurso inexistente.'})
         filename,kind=routes[path]

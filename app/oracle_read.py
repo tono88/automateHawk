@@ -23,6 +23,8 @@ class OracleReadStore:
         self.claimed_at=0
         self.failure_count=0
         self.retry_after=0
+        self.batch_numbers=[]
+        self.batch_done=set()
         self.repository=repository
         self.role=role
         self.details={}
@@ -57,9 +59,14 @@ class OracleReadStore:
         with self.lock:
             if self.job and self.job['state']=='running' and self.claimed_at and monotonic()-self.claimed_at>900:self.fail('timeout')
             if self.job and self.job['state'] in ('pending','running'): return deepcopy(self.job)
-            if kind not in ('opportunities','detail'):raise ValidationError('Operación de consulta desconocida.')
+            if kind not in ('opportunities','detail','details_batch'):raise ValidationError('Operación de consulta desconocida.')
             if kind=='detail' and not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
+            if kind=='details_batch':
+                self.batch_numbers=[r['opportunity_number'] for r in self.records if r['opportunity_number'] not in self.details]
+                self.batch_done=set()
+                self.job.update(total=len(self.batch_numbers),processed=0)
+                if not self.batch_numbers:self.job.update(state='completed',message='La cartera cargada ya tiene sus detalles disponibles.')
             return deepcopy(self.job)
 
     def claim(self):
@@ -141,9 +148,16 @@ class OracleReadStore:
             if self.repository:self.repository.save_detail(number,payload);self._reload()
             else:self.details[number]=dict(payload,loaded_at=datetime.now(timezone.utc).isoformat())
             if not self.job:self.request()
-            self.job.update(state='completed',message='Detalle consultado y guardado en la copia local.',finished_at=datetime.now(timezone.utc).isoformat())
+            if self.job.get('kind')=='details_batch' and number in self.batch_numbers:
+                self.batch_done.add(number);self.claimed_at=monotonic();self.worker_seen=monotonic()
+                self.job.update(processed=len(self.batch_done),message=f'Datos ampliados: {len(self.batch_done)} de {len(self.batch_numbers)} expedientes.')
+                if len(self.batch_done)==len(self.batch_numbers):self.job.update(state='completed',finished_at=datetime.now(timezone.utc).isoformat())
+            else:self.job.update(state='completed',message='Detalle consultado y guardado en la copia local.',finished_at=datetime.now(timezone.utc).isoformat())
             self.failure_count=0;self.retry_after=0
         return self.status()
+
+    def batch(self):
+        with self.lock:return {'job':deepcopy(self.job),'pending':[n for n in self.batch_numbers if n not in self.batch_done]}
 
     def propose(self,body):
         if self.role!='editor' or not self.repository:raise PermissionError()

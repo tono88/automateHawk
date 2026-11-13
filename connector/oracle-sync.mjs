@@ -14,7 +14,7 @@ const COLUMNS = {
 // Runs only against the visible, rendered document. No application internals.
 export function readOpportunityGrid() {
   const tables=Array.from(document.querySelectorAll('table'));
-  const header=tables.find(t=>t.getAttribute('summary')?.startsWith('Esta tabla'));
+  const header=tables.find(t=>t.getAttribute('summary')?.startsWith('Esta tabla')&&Array.from(t.rows).some(r=>Array.from(r.cells).some(c=>c.innerText.trim()==='Número de oportunidad')));
   const bodies=tables.filter(t=>t.getAttribute('summary')==='Oportunidad');
   if(!header || !bodies.length) return null;
   const headerRows=Array.from(header.rows).map(r=>Array.from(r.cells).map(c=>c.innerText.trim()));
@@ -33,9 +33,10 @@ export function normalizeGrid(grid) {
 }
 
 async function ready(adapter,predicate) {
-  for(let attempt=0;attempt<10;attempt++) {
+  for(let attempt=0;attempt<40;attempt++) {
     await adapter.observe();
     try{if(await predicate())return;}catch{/* ADF may detach the old table while replacing it. */}
+    await new Promise(resolve=>setTimeout(resolve,200));
   }
   throw Error('timeout');
 }
@@ -131,6 +132,10 @@ export async function configureQuery(adapter) {
   await ui.getByRole('option',{name:'Todos los registros que puedo ver',exact:true}).click();
   adapter.phase='period_filter';await ui.getByRole('combobox',{name:'Período de cierre',exact:true}).click();
   await ui.getByRole('option',{name:'Año actual',exact:true}).click();
+  for(const label of ['Nombre','Número de oportunidad']) {
+    const filter=ui.getByRole('textbox',{name:label,exact:true});
+    if(await filter.count())await filter.fill('');
+  }
   adapter.phase='run_search';await ui.getByRole('button',{name:'Buscar',exact:true}).last().click();await observe();
   await ready(adapter,async()=>{const grid=await ui.evaluate(readOpportunityGrid);return !!grid?.rows?.length;});
 }
@@ -147,6 +152,11 @@ export async function processOneJob(adapter,base,{maxRows=120}={}) {
       return await localRequest(base,'/api/oracle/details/import',payload,{'X-Sync-Ticket':ticket});
     }
     await configureQuery(adapter);
+    if(job.kind==='details_batch') {
+      while((await localRequest(base,'/api/oracle/batch')).pending.length)
+        await processDetailSlice(adapter,base,{limit:3});
+      return localRequest(base,'/api/oracle/status');
+    }
     let payload=await collectOpportunities({...adapter,maxRows});
     const result=await deliverToLocal(base,payload);payload=null;
     return result;
@@ -160,7 +170,7 @@ export async function processOneJob(adapter,base,{maxRows=120}={}) {
 }
 
 export function readSummaryDetail() {
-  const root=Array.from(document.querySelectorAll('div')).find(d=>d.id.endsWith(':OpportunitySummaryPgl1'));
+  const root=Array.from(document.querySelectorAll('div')).find(d=>d.id.endsWith(':OpportunitySummaryPgl1')&&d.getClientRects().length);
   if(!root)return null;
   const labels={
     'Ciclo de Ingreso':'cycle','Año':'year','Estado Proceso Admision':'admission_status',
@@ -180,7 +190,7 @@ export function readSummaryDetail() {
     const control=label.htmlFor?document.getElementById(label.htmlFor):null;
     let value='';let editable=false;
     if(control?.matches('input,textarea,select')) {
-      value=control.value||control.getAttribute('title')||'';
+      value=control.value??'';
       editable=!control.disabled&&control.getAttribute('aria-disabled')!=='true'&&(!control.readOnly||control.getAttribute('role')==='combobox');
     } else {
       const row=label.closest('tr');const cell=row?.cells[row.cells.length-1];
@@ -203,49 +213,26 @@ export function readLinkedActivities() {
 }
 
 export async function collectOpportunityDetail(adapter,number) {
-  const {ui,observe,scrollGrid}=adapter;
   await configureQuery(adapter);
-  adapter.phase='find_record';
-  let match=null;
-  for(let step=0;step<25;step++) {
-    await observe();
-    match=await ui.evaluate(number=>{
-      const tables=Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad');
-      for(let table=0;table<tables.length;table++)for(let row=0;row<tables[table].rows.length;row++)
-        if(tables[table].rows[row].cells[0]?.innerText.trim()===number){
-          const bounds=tables[table].rows[row].getBoundingClientRect(),clip=tables[table].parentElement.getBoundingClientRect();
-          const top=Math.max(clip.top,0),bottom=Math.min(clip.bottom,window.innerHeight);
-          if(bounds.top>=top&&bounds.bottom<=bottom)return {table,row};
-          return {offscreen:true,direction:bounds.top<top?'up':'down'};
-        }
-      return null;
-    },number);
-    if(match&&!match.offscreen)break;
-    await scrollGrid(match?.direction||'down',1);match=null;
+  await selectOpportunityByNumber(adapter,number);
+  await openCachedDetail(adapter,number);
+  const payload=await captureOpenDetail(adapter,number);
+  await closeCachedDetail(adapter);
+  return payload;
+}
+
+export async function selectOpportunityByNumber(adapter,number) {
+  const filter=adapter.ui.getByRole('textbox',{name:'Número de oportunidad',exact:true});
+  if(!await filter.count()) {
+    await adapter.ui.getByRole('button',{name:'Agregar',exact:true}).click();
+    await adapter.observe();
+    await adapter.ui.getByRole('menuitem',{name:'Número de oportunidad',exact:true}).click();
+    await ready(adapter,async()=>await filter.count()>0);
   }
-  if(!match)throw Error('empty');
-  adapter.phase='open_record';await ui.getByRole('table',{name:'Oportunidad',exact:true}).nth(match.table).getByRole('row').nth(match.row).getByRole('cell').nth(3).getByRole('link').click();
-  await observe();
-  await ready(adapter,async()=>await ui.getByRole('button',{name:'Guardar y Cerrar',exact:true}).count()>0);
-  adapter.phase='expand_modules';for(const title of ['Ampliar Asistencia Economica','Ampliar Información Adicional']) {
-    const button=ui.getByRole('button',{name:title,exact:true});if(await button.count()){await button.click();await observe();}
-  }
-  await observe();
-  adapter.phase='read_fields';const detail=await ui.evaluate(readSummaryDetail);if(!detail)throw Error('layout');
-  let activities={queried:false,rows:[]};
-  const activityLink=ui.getByRole('link',{name:'Actividades',exact:true});
-  if(await activityLink.count()) {
-    adapter.phase='open_activities';await activityLink.click();await observe();
-    const filter=ui.getByRole('combobox',{name:'Mostrar',exact:true});
-    if(await filter.count()) {
-      adapter.phase='activities_filter';await filter.click();await ui.getByRole('option',{name:'Todas las actividades',exact:true}).click();
-      await ui.getByRole('button',{name:'Buscar',exact:true}).last().click();await observe();
-    }
-    adapter.phase='read_activities';await observe();activities=await ui.evaluate(readLinkedActivities);
-  }
-  adapter.phase='close_detail';const close=ui.getByRole('button',{name:'Cancelar',exact:true}).last();
-  await close.click();await ready(adapter,async()=>await ui.getByRole('button',{name:'Cancelar',exact:true}).count()===0);
-  return {opportunity_number:number,...detail,activities};
+  await adapter.ui.getByRole('textbox',{name:'Nombre',exact:true}).fill('');
+  await filter.fill(number);
+  await adapter.ui.getByRole('button',{name:'Buscar',exact:true}).last().press('Enter');
+  await ready(adapter,async()=>{const grid=await adapter.ui.evaluate(readOpportunityGrid);return !!grid?.rows.some(r=>r[0]?.trim()===number);});
 }
 
 export function startWorker(adapter,base,{maxRows=120,pollMs=2500}={}) {
@@ -259,4 +246,101 @@ export function startWorker(adapter,base,{maxRows=120,pollMs=2500}={}) {
     }
   })();
   return {stop:()=>{stopping=true;},finished};
+}
+
+/** Reuses the list between records; Enter opens off-screen ADF links reliably. */
+export async function openCachedDetail(adapter,number) {
+  const {ui}=adapter;
+  let match;
+  for(let step=0;step<30;step++) {
+    match=await ui.evaluate(number=>{
+      const tables=Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad');
+      for(let table=0;table<tables.length;table++)for(let row=0;row<tables[table].rows.length;row++)
+        if(tables[table].rows[row].cells[0]?.innerText.trim()===number)return {table,row};
+      return null;
+    },number);
+    if(match)break;
+    await adapter.scrollGrid('down',2);await adapter.observe();
+  }
+  if(!match)throw Error('record-not-in-query');
+  await ui.getByRole('table',{name:'Oportunidad',exact:true}).nth(match.table).getByRole('row').nth(match.row).getByRole('cell').nth(3).getByRole('link').press('Enter');
+  await ready(adapter,async()=>await ui.getByRole('button',{name:'Guardar y Cerrar',exact:true}).count()>0);
+}
+
+export async function captureOpenDetail(adapter,number,{activities=true}={}) {
+  const {ui}=adapter;
+  for(const [expand,collapse] of [['Ampliar Asistencia Economica','Reducir Asistencia Economica'],['Ampliar Información Adicional','Reducir Información Adicional']]) {
+    const button=ui.getByRole('button',{name:expand,exact:true});
+    if(await button.count()) {
+      await button.press('Enter');
+      await ready(adapter,async()=>await ui.getByRole('button',{name:collapse,exact:true}).count()>0);
+    }
+  }
+  await ready(adapter,async()=>!!await ui.evaluate(readSummaryDetail));
+  const detail=await ui.evaluate(readSummaryDetail);
+  let linked={queried:false,rows:[]};
+  if(activities) {
+    const link=ui.getByRole('link',{name:'Actividades',exact:true});
+    if(await link.count()) {
+      await link.press('Enter');
+      await ready(adapter,async()=>await ui.getByRole('combobox',{name:'Mostrar',exact:true}).count()>0);
+      const filter=ui.getByRole('combobox',{name:'Mostrar',exact:true});
+      const current=await filter.evaluate(e=>e.value);
+      if(current!=='Todas las actividades') {
+        await filter.click();
+        await ui.getByRole('option',{name:'Todas las actividades',exact:true}).click();
+        await ui.getByRole('button',{name:'Buscar',exact:true}).last().press('Enter');
+      }
+      await adapter.observe();await adapter.observe();
+      linked=await ui.evaluate(readLinkedActivities);
+    }
+  }
+  return {opportunity_number:number,...detail,activities:linked};
+}
+
+export async function closeCachedDetail(adapter) {
+  const cancel=adapter.ui.getByRole('button',{name:'Cancelar',exact:true}).last();
+  if(await cancel.count()) {
+    await cancel.press('Enter');
+    await ready(adapter,async()=>await adapter.ui.getByRole('button',{name:'Cancelar',exact:true}).count()===0);
+  }
+}
+
+export function domAdapter(tab) {
+  return {
+    ui:tab.playwright,
+    observe:()=>tab.playwright.domSnapshot(),
+    scrollGrid:async(direction='down')=>{
+      const table=tab.playwright.getByRole('table',{name:'Oportunidad',exact:true}).last();
+      const lastLink=table.getByRole('row').last().getByRole('link').last();
+      await lastLink.press(direction==='up'?'PageUp':'PageDown');
+    }
+  };
+}
+
+export async function deliverDetail(base,payload) {
+  const {ticket}=await localRequest(base,'/api/oracle/ticket',{});
+  return localRequest(base,'/api/oracle/details/import',payload,{'X-Sync-Ticket':ticket});
+}
+
+export async function processDetailSlice(adapter,base,{limit=3,maxMillis=35000}={}) {
+  const started=Date.now();let completed=0;
+  let queue=await localRequest(base,'/api/oracle/batch');
+  for(let index=0;index<limit;index++) {
+    if(Date.now()-started>maxMillis)break;
+    queue=await localRequest(base,'/api/oracle/batch');
+    if(!queue.pending.length)break;
+    const rendered=await adapter.ui.evaluate(()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').flatMap(t=>Array.from(t.rows).map(r=>r.cells[0]?.innerText.trim())));
+    let number=queue.pending.find(n=>rendered.includes(n));
+    if(!number) {
+      number=queue.pending[0];
+      await selectOpportunityByNumber(adapter,number);
+    }
+    await openCachedDetail(adapter,number);
+    let payload=await captureOpenDetail(adapter,number);
+    await deliverDetail(base,payload);payload=null;
+    await closeCachedDetail(adapter);
+    completed++;
+  }
+  return {completed,pending:(await localRequest(base,'/api/oracle/batch')).pending.length};
 }

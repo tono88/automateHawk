@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {normalizeGrid,collectOpportunities} from '../connector/oracle-sync.mjs';
+import {normalizeGrid,collectOpportunities,readOpportunityGrid} from '../connector/oracle-sync.mjs';
 const grid=(number='SYNTHETIC-001')=>({headers:['Número de oportunidad','Nombre','Etapa de ventas','Correo electrónico de responsable'],rows:[[number,'Oportunidad ficticia','01 - Interesado','ficticio@example.invalid']]});
 test('collector excludes fields outside the allowlist',()=>{
   const [row]=normalizeGrid(grid());
@@ -19,4 +19,16 @@ test('deduplicates virtual pages and declares a partial result',async()=>{
 });
 test('does not publish a blank query as a successful refresh',async()=>{
   await assert.rejects(collectOpportunities({ui:{evaluate:async()=>({headers:grid().headers,rows:[]})},observe:async()=>{},scrollGrid:async()=>{}}),/empty/);
+});
+
+// ADF can retain the activity header before the active opportunities header.
+test('uses the opportunity header when an earlier panel has another table',()=>{
+  const table=(summary,rows)=>({getAttribute:()=>summary,rows:rows.map(r=>({cells:r.map(innerText=>({innerText}))}))});
+  const tables=[table('Esta tabla contiene cabeceras',[['Actividad','Asunto']]),
+    table('Esta tabla contiene cabeceras',[grid().headers]),table('Oportunidad',grid().rows)];
+  const previous=globalThis.document;
+  try {
+    globalThis.document={querySelectorAll:()=>tables};
+    assert.equal(normalizeGrid(readOpportunityGrid())[0].opportunity_number,'SYNTHETIC-001');
+  } finally {globalThis.document=previous;}
 });

@@ -46,3 +46,7 @@ Primero se definirán las métricas: conversión por cohorte y ciclo, tiempos en
 Después se construirá un modelo analítico separado del operativo: hechos de oportunidades, transiciones, actividades y pagos; dimensiones de fecha, ciclo, carrera, asesor, origen y colegio. Se conservarán cambios de estado con su fecha de observación y se definirán reglas para eventos tardíos, correcciones y reingresos. Las marcas observadas por una consulta no deben presentarse como la hora exacta del evento en Oracle.
 
 Finalmente se evaluarán tableros con filtros, acceso por rol y diccionario de datos. La selección de herramienta de BI y las predicciones quedan pendientes. No se realizarán decisiones de admisión automatizadas a partir de puntuaciones o predicciones.
+
+## Acceso y automatización pendiente
+
+La propuesta de identidad, sesiones y recursos compartidos se detalla en [acceso multiusuario](acceso-multiusuario.md). Node-RED y el mapeo de procesos quedan pendientes; la prioridad actual es completar consultas, hacer visibles los datos reales y validar acceso por persona antes del despliegue institucional.

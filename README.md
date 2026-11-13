@@ -68,3 +68,9 @@ node --test tests/connector.test.mjs
 ```
 
 Las pruebas usan solo datos ficticios y verifican el demo, la separación de fuentes, la importación atómica protegida, la conservación de la carga anterior ante fallos, la deduplicación de filas virtuales y los límites de campos. No acceden a Oracle.
+
+## Datos visibles y acceso futuro
+
+Los datos reales disponibles se muestran completos en el portal local; su protección se aplica al almacenamiento privado y a la exclusión de Git. Un guion en una celda indica un dato sin valor disponible: el detalle explica si Oracle lo devolvió vacío o falta ampliar la consulta. «Completar datos de la cartera» consulta por lotes los detalles todavía pendientes y conserva lo ya recibido. La cobertura sigue limitada al conjunto de oportunidades importado, no a todo el CRM.
+
+Ver la [propuesta de acceso multiusuario](docs/acceso-multiusuario.md). SSO y permisos por persona siguen pendientes; la instalación permanece local.

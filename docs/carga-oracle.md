@@ -53,3 +53,11 @@ La entrega al servidor utiliza exclusivamente loopback. El trabajador no llama A
 ## Referencias técnicas
 
 [Documentación de Playwright](https://playwright.dev/docs/intro) y [consideraciones de autenticación](https://playwright.dev/docs/auth). Los archivos autenticados pueden contener material sensible; esta implementación evita crearlos.
+
+## Consulta ampliada por lotes
+
+El botón «Completar datos de la cartera» solicita los detalles que faltan en la copia importada. Abre cada oportunidad, expande los módulos y consulta actividades; entrega cada resultado directamente a PostgreSQL antes de pasar al siguiente. Al volver a solicitar la carga tras un fallo o reinicio, se seleccionan únicamente los detalles que aún no se recibieron. La cola activa es temporal; el avance se conserva mediante los detalles persistidos.
+
+El lector reutiliza la lista y, cuando el registro no está renderizado, agrega el criterio «Número de oportunidad» de la búsqueda avanzada. No usa el nombre para correlacionar registros. Los controles de espera leen el documento de nuevo porque ADF reemplaza las tablas y puede conservar paneles anteriores ocultos. No guarda cambios de oportunidades ni preferencias de búsqueda.
+
+Una consulta de detalle sigue siendo parcial: solo certifica los campos mapeados y las actividades visibles, hasta 100 filas. No prueba la inexistencia de otras relaciones ni confirma pagos. El botón no amplía por sí solo el conjunto original de 120 oportunidades ni refresca detalles ya existentes; para actualizar uno se usa su consulta individual.

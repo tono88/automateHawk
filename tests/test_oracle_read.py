@@ -44,6 +44,22 @@ class ReadModelTests(unittest.TestCase):
         self.assertFalse(self.s.snapshot()['details']['SYNTHETIC-001']['capabilities']['resolution'])
         data['fields']={'unmapped_secret':'not allowed'}
         with self.assertRaises(ValidationError):self.s.ingest_detail(data)
+    def test_batch_progress_is_idempotent_and_retries_only_missing(self):
+        body=payload();body['records'] += [{'opportunity_number':'SYNTHETIC-002'}]
+        self.s.ingest(body)
+        self.assertEqual(self.s.request('details_batch')['total'],2)
+        self.s.claim()
+        detail={'opportunity_number':'SYNTHETIC-001','fields':{'cycle':''}}
+        self.s.ingest_detail(detail);self.s.ingest_detail(detail)
+        self.assertEqual(self.s.status()['job']['processed'],1)
+        self.assertEqual(self.s.batch()['pending'],['SYNTHETIC-002'])
+        self.s.fail('timeout')
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+        self.s.claim();self.s.ingest_detail(dict(detail,opportunity_number='SYNTHETIC-002'))
+        self.assertEqual(self.s.status()['job']['state'],'completed')
+        self.assertEqual(self.s.request('details_batch')['total'],0)
+        self.assertEqual(self.s.batch()['pending'],[])
+
     def test_reader_cannot_propose_or_change_schedule(self):
         with self.assertRaises(PermissionError):self.s.propose({})
         with self.assertRaises(PermissionError):self.s.save_settings({'enabled':True,'interval_minutes':15})

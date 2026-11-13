@@ -74,3 +74,17 @@ class ScopedRepository(PostgresRepository):
         return super().save_local_activity(item,actor)
     def summary(self):
         return dict(engine='postgresql',persistent=True,records=len(self.grants()),historical_versions=None,sync_runs=None,global_mirror=True)
+
+    def read_progress(self):
+        allowed=self.grants()
+        with self.connect() as c:
+            rows=c.execute('SELECT opportunity_number,state,attempts,error_code,schema_version FROM detail_read_progress WHERE principal=%s',(self.principal,)).fetchall()
+        return {r['opportunity_number']:{k:v for k,v in r.items() if k!='opportunity_number'} for r in rows if r['opportunity_number'] in allowed}
+    def save_read_progress(self,number,state,attempts=0,error_code=''):
+        self.require(number)
+        if state not in ('reading','completed','partial','failed') or error_code not in ('','timeout','layout','permission','unavailable'):raise ValueError('Invalid read outcome')
+        with self.connect() as c:
+            c.execute("""INSERT INTO detail_read_progress(principal,opportunity_number,state,attempts,error_code)
+              VALUES(%s,%s,%s,%s,%s) ON CONFLICT(principal,opportunity_number) DO UPDATE
+              SET state=excluded.state,attempts=detail_read_progress.attempts+excluded.attempts,
+                  error_code=excluded.error_code,schema_version=2,updated_at=now()""",(self.principal,number,state,attempts,error_code))

@@ -25,6 +25,8 @@ class OracleReadStore:
         self.retry_after=0
         self.batch_numbers=[]
         self.batch_done=set()
+        self.batch_failed=set();self.batch_partial=set()
+        self.read_outcomes={}
         self.repository=repository
         self.role=role
         self.actor='local-editor'
@@ -38,6 +40,7 @@ class OracleReadStore:
     def _reload(self):
         state=self.repository.load()
         self.records=state['records'];self.loaded_at=state['loaded_at'];self.scope=state['scope'];self.details=state['details'];self.detail_states=state.get('detail_states',{})
+        if hasattr(self.repository,'read_progress'):self.read_outcomes=self.repository.read_progress()
 
     def heartbeat(self):
         with self.lock:
@@ -65,9 +68,10 @@ class OracleReadStore:
             if kind=='detail' and not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             if kind=='details_batch':
-                self.batch_numbers=[r['opportunity_number'] for r in self.records if self.details.get(r['opportunity_number'],{}).get('schema_version',1)<2]
-                self.batch_done=set()
-                self.job.update(total=len(self.batch_numbers),processed=0)
+                self.batch_numbers=[r['opportunity_number'] for r in self.records if (self.details.get(r['opportunity_number'],{}).get('schema_version',1)<2 or self.details.get(r['opportunity_number'],{}).get('pending_modules')) and self.read_outcomes.get(r['opportunity_number'],{}).get('state')!='completed']
+                self.batch_numbers.sort(key=lambda n:{'failed':1,'partial':2}.get(self.read_outcomes.get(n,{}).get('state'),0))
+                self.batch_done=set();self.batch_failed=set();self.batch_partial=set()
+                self.job.update(successful=0,failed=0,total=len(self.batch_numbers),processed=0)
                 if not self.batch_numbers:self.job.update(state='completed',message='La cartera cargada ya tiene sus detalles disponibles.')
             return deepcopy(self.job)
 
@@ -90,7 +94,7 @@ class OracleReadStore:
             self.failure_count+=1
             self.retry_after=monotonic()+(900 if message=='session' else min(60*2**min(self.failure_count-1,5),1800))
 
-    def ingest(self,body):
+    def ingest(self,body,*,preserve_job=False):
         if not isinstance(body,dict) or set(body)-{'records','scope','partial'}: raise ValidationError('Carga inválida.')
         rows=body.get('records')
         if not isinstance(rows,list) or not rows or len(rows)>1000: raise ValidationError('La carga debe contener entre 1 y 1000 filas verificadas.')
@@ -115,8 +119,9 @@ class OracleReadStore:
                 self.records=clean
                 self.loaded_at=datetime.now(timezone.utc).isoformat()
             self.scope=scope
-            if not self.job: self.request()
-            self.job.update(state='completed',message=f'Carga parcial verificada: {len(clean)} oportunidades.',finished_at=self.loaded_at)
+            if not preserve_job:
+                if not self.job:self.request()
+                self.job.update(state='completed',message=f'Carga parcial verificada: {len(clean)} oportunidades.',finished_at=self.loaded_at)
             self.failure_count=0;self.retry_after=0
             return self.status()
 
@@ -127,14 +132,17 @@ class OracleReadStore:
                                  worker_online=bool(self.worker_seen and monotonic()-self.worker_seen<90),
                                  role=self.role,can_propose=self.role=='editor' and bool(self.repository),settings=self.settings,
                                  retry_in_seconds=max(0,int(self.retry_after-monotonic())),
-                                 detail_count=len(self.details),database=self.repository.summary() if self.repository else None))
+                                 detail_count=len(self.details),extraction=self.extraction_progress(),database=self.repository.summary() if self.repository else None))
 
     def snapshot(self):
-        with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details),detail_states=deepcopy(self.detail_states))
+        with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details),detail_states=deepcopy(self.detail_states),read_states={r['opportunity_number']:deepcopy(self.read_outcomes.get(r['opportunity_number'],{})) for r in self.records})
 
     def ingest_detail(self,body):
-        if not isinstance(body,dict) or set(body)-{'opportunity_number','fields','capabilities','activities','schema_version'}:raise ValidationError('Detalle inválido.')
+        if not isinstance(body,dict) or set(body)-{'opportunity_number','fields','capabilities','activities','schema_version','pending_modules','module_reason','validation_field'}:raise ValidationError('Detalle inválido.')
         if type(body.get('schema_version',1))!=int or body.get('schema_version',1) not in (1,2):raise ValidationError('Versión de detalle inválida.')
+        if body.get('validation_field','') not in ('',*DETAIL_FIELDS):raise ValidationError('Campo de validación inválido.')
+        modules=body.get('pending_modules',[])
+        if not isinstance(modules,list) or len(modules)>2 or any(m not in ('contact','activities') for m in modules) or body.get('module_reason','') not in ('','validation'):raise ValidationError('Estado de módulos inválido.')
         number=body.get('opportunity_number')
         if not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
         fields=body.get('fields',{});caps=body.get('capabilities',{})
@@ -146,21 +154,51 @@ class OracleReadStore:
         allowed={'activity','subject','date','owner','type','priority'}
         for row in activity['rows']:
             if not isinstance(row,dict) or set(row)-allowed or any(not isinstance(v,str) or len(v)>1000 for v in row.values()):raise ValidationError('Actividad inválida.')
-        payload={'schema_version':body.get('schema_version',1),'fields':fields,'capabilities':caps,'activities':activity,'source':'oracle-ui','partial':True}
+        payload={'schema_version':body.get('schema_version',1),'fields':fields,'capabilities':caps,'activities':activity,'source':'oracle-ui','partial':True,'pending_modules':modules,'module_reason':body.get('module_reason',''),'validation_field':body.get('validation_field','')}
         with self.lock:
             if self.repository:self.repository.save_detail(number,payload);self._reload()
             else:self.details[number]=dict(payload,loaded_at=datetime.now(timezone.utc).isoformat())
+            if body.get('schema_version',1)>=2:self._read_outcome(number,'partial' if modules else 'completed')
             if not self.job:self.request()
             if self.job.get('kind')=='details_batch' and number in self.batch_numbers:
-                self.batch_done.add(number);self.claimed_at=monotonic();self.worker_seen=monotonic()
-                self.job.update(processed=len(self.batch_done),message=f'Datos ampliados: {len(self.batch_done)} de {len(self.batch_numbers)} expedientes.')
-                if len(self.batch_done)==len(self.batch_numbers):self.job.update(state='completed',finished_at=datetime.now(timezone.utc).isoformat())
+                self.batch_partial.discard(number);self.batch_done.discard(number)
+                (self.batch_partial if modules else self.batch_done).add(number);self.batch_failed.discard(number);self._batch_progress()
             else:self.job.update(state='completed',message='Detalle consultado y guardado en la copia local.',finished_at=datetime.now(timezone.utc).isoformat())
             self.failure_count=0;self.retry_after=0
         return self.status()
 
-    def batch(self):
-        with self.lock:return {'job':deepcopy(self.job),'pending':[n for n in self.batch_numbers if n not in self.batch_done]}
+    def extraction_progress(self):
+        completed=sum((self.details.get(r['opportunity_number'],{}).get('schema_version',1)>=2 and not self.details.get(r['opportunity_number'],{}).get('pending_modules')) or self.read_outcomes.get(r['opportunity_number'],{}).get('state')=='completed' for r in self.records)
+        failed=sum(self.read_outcomes.get(r['opportunity_number'],{}).get('state')=='failed' for r in self.records)
+        return {'completed':completed,'pending':len(self.records)-completed,'failed':failed,'partial':sum(self.read_outcomes.get(r['opportunity_number'],{}).get('state')=='partial' for r in self.records)}
+
+    def _read_outcome(self,number,state,attempts=0,error_code=''):
+        if self.repository and hasattr(self.repository,'save_read_progress'):
+            self.repository.save_read_progress(number,state,attempts,error_code)
+        old=self.read_outcomes.get(number,{})
+        self.read_outcomes[number]={'state':state,'schema_version':2,'attempts':old.get('attempts',0)+attempts,'error_code':error_code}
+
+    def read_attempt(self,number,attempt):
+        with self.lock:
+            self._read_outcome(number,'reading',1)
+            self.claimed_at=monotonic()
+            self.job['message']=f"Consultando detalles: {len(self.batch_done)} recuperados, {len(self.batch_failed)} pendientes de revisión. Intento {attempt} de 3."
+
+    def skip_detail(self,number,code='timeout',persist=True):
+        with self.lock:
+            if persist:self._read_outcome(number,'failed',error_code=code)
+            self.batch_failed.add(number);self._batch_progress()
+
+    def _batch_progress(self):
+        self.claimed_at=monotonic();self.worker_seen=monotonic()
+        processed=len(self.batch_done|self.batch_failed|self.batch_partial)
+        self.job.update(processed=processed,successful=len(self.batch_done),failed=len(self.batch_failed),partial=len(self.batch_partial),message=f'Detalles completos: {len(self.batch_done)}. Lecturas parciales: {len(self.batch_partial)}. Pendientes de revisión: {len(self.batch_failed)}. Avance: {processed} de {len(self.batch_numbers)}.')
+        if processed==len(self.batch_numbers):self.job.update(state='completed',finished_at=datetime.now(timezone.utc).isoformat())
+
+    def batch(self,*,internal=False):
+        with self.lock:
+            allowed={r['opportunity_number'] for r in self.records}
+            return {'job':deepcopy(self.job),'pending':[n for n in self.batch_numbers if n not in self.batch_done and n not in self.batch_failed and n not in self.batch_partial and (internal or n in allowed)],'failed':sorted(n for n in self.batch_failed if internal or n in allowed)}
 
     def propose(self,body):
         if self.role!='editor' or not self.repository:raise PermissionError()

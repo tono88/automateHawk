@@ -88,13 +88,23 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         a.snapshot_started=datetime.now(timezone.utc)-timedelta(minutes=1)
         a.save_snapshot([row],'Lectura antigua que terminó después de guardar')
         assert b.load()['records'][0]['name']=='Nombre ficticio actualizado'
+        a.save_read_progress(row['opportunity_number'],'reading',1)
+        a.save_read_progress(row['opportunity_number'],'completed')
+        assert ScopedRepository(dsn,'synthetic-user-a').read_progress()[row['opportunity_number']]['state']=='completed'
+        assert not b.read_progress()
         assert a.load()['detail_states'][row['opportunity_number']]=='available'
         with a.connect() as c:c.execute("UPDATE user_permissions SET detail_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
         assert a.load()['detail_states'][row['opportunity_number']]=='permission_expired' and not a.load()['details']
+        resumed=OracleReadStore(ScopedRepository(dsn,'synthetic-user-a'))
+        assert resumed.request('details_batch')['total']==0
+        assert not resumed.details
+        a.save_read_progress(row['opportunity_number'],'partial')
+        assert OracleReadStore(ScopedRepository(dsn,'synthetic-user-a')).request('details_batch')['total']==1
+        assert a.read_progress()[row['opportunity_number']]['state']=='partial'
         with a.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
         assert not a.load()['records']
         assert b.load()['records']
-        print(json.dumps({'postgresql_integration':'passed','checks':35,'data':'synthetic isolated database'}))
+        print(json.dumps({'postgresql_integration':'passed','checks':41,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

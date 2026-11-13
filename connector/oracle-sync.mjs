@@ -1,4 +1,4 @@
-import {collectRelatedContact} from './contact-reader.mjs';
+import {collectRelatedContact,readBlockingValidation,readValidationField} from './contact-reader.mjs';
 /** Browser UI collector. No Oracle HTTP calls, credentials, files or raw logs. */
 export const SCOPE = 'Todos los registros que puedo ver · oportunidades abiertas · año actual';
 const COLUMNS = {
@@ -58,6 +58,8 @@ export async function openOpportunityQuery(adapter) {
   await ui.getByRole('tab',{name:'Ventas',exact:true}).click();
   await ui.getByRole('link',{name:'Oportunidades',exact:true}).click();await observe();
   await ready(adapter,async()=>await ui.getByRole('heading',{name:'Oportunidades',exact:true}).count()>0);
+  const lateDetail=ui.getByRole('button',{name:'Cancelar',exact:true}).last();
+  if(await lateDetail.count()){await lateDetail.click();await ready(adapter,async()=>await ui.getByRole('button',{name:'Cancelar',exact:true}).count()===0);}
   // ADF's checkbox is exposed inconsistently to DOM role locators; the adapter
   // performs its supported UI click using a fresh accessibility observation.
 }
@@ -129,7 +131,9 @@ export async function configureQuery(adapter) {
   await openOpportunityQuery(adapter);
   adapter.phase='advanced_ready';
   await ready(adapter,async()=>await ui.getByRole('button',{name:'Mostrar búsqueda avanzada',exact:true}).count()>0||await ui.getByRole('button',{name:'Ocultar búsqueda avanzada',exact:true}).count()>0);
-  adapter.phase='advanced_toggle';await clickAdvanced();await observe();
+  adapter.phase='advanced_toggle';
+  if(!await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).count())await clickAdvanced();
+  await observe();
   adapter.phase='scope_ready';
   await ready(adapter,async()=>await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).count()>0);
   adapter.phase='scope_filter';await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).click();
@@ -223,10 +227,16 @@ export async function collectOpportunityDetail(adapter,number,{reuseQuery=false}
   adapter.phase='open_detail';await openCachedDetail(adapter,number);
   adapter.phase='capture_detail';const payload=await captureOpenDetail(adapter,number);
   try {
-    adapter.phase='linked_contact';const contact=await collectRelatedContact(adapter);
-    Object.assign(payload.fields,contact.fields);Object.assign(payload.capabilities,contact.capabilities);
+    if(!payload.pending_modules?.includes('contact')){
+      adapter.phase='linked_contact';const contact=await collectRelatedContact(adapter);
+      Object.assign(payload.fields,contact.fields);Object.assign(payload.capabilities,contact.capabilities);
+      if(contact.pending){payload.pending_modules=[...(payload.pending_modules||[]),'contact'];payload.module_reason='validation';payload.validation_field=contact.validation_field||'';}
+    }
     payload.schema_version=2;
-  } finally {await closeCachedDetail(adapter);}
+  } finally {
+    adapter.phase='close_detail';
+    try{await closeCachedDetail(adapter);}catch{adapter.discardPage=true;}
+  }
   return payload;
 }
 
@@ -274,6 +284,11 @@ export async function openCachedDetail(adapter,number) {
   if(!match)throw Error('record-not-in-query');
   await ui.getByRole('table',{name:'Oportunidad',exact:true}).nth(match.table).getByRole('row').nth(match.row).getByRole('cell').nth(3).getByRole('link').press('Enter');
   await ready(adapter,async()=>await ui.getByRole('button',{name:'Guardar y Cerrar',exact:true}).count()>0);
+  // Oracle remembers the last subtab (for example Contacts) between records.
+  // Always open Summary before reading, instead of waiting on a hidden panel.
+  const summary=ui.getByRole('link',{name:'Resumen',exact:true});
+  await ready(adapter,async()=>await summary.count()>0);
+  if(!await ui.evaluate(readSummaryDetail)){await summary.click();await ready(adapter,async()=>!!await ui.evaluate(readSummaryDetail));}
 }
 
 export async function captureOpenDetail(adapter,number,{activities=true}={}) {
@@ -281,7 +296,7 @@ export async function captureOpenDetail(adapter,number,{activities=true}={}) {
   for(const [expand,collapse] of [['Ampliar Asistencia Economica','Reducir Asistencia Economica'],['Ampliar Información Adicional','Reducir Información Adicional']]) {
     const button=ui.getByRole('button',{name:expand,exact:true});
     if(await button.count()) {
-      await button.press('Enter');
+      await button.click();
       await ready(adapter,async()=>await ui.getByRole('button',{name:collapse,exact:true}).count()>0);
     }
   }
@@ -291,8 +306,9 @@ export async function captureOpenDetail(adapter,number,{activities=true}={}) {
   if(activities) {
     const link=ui.getByRole('link',{name:'Actividades',exact:true});
     if(await link.count()) {
-      await link.press('Enter');
-      await ready(adapter,async()=>await ui.getByRole('combobox',{name:'Mostrar',exact:true}).count()>0);
+      await link.click();
+      await ready(adapter,async()=>await ui.getByRole('combobox',{name:'Mostrar',exact:true}).count()>0||await ui.evaluate(readBlockingValidation));
+      if(!await ui.getByRole('combobox',{name:'Mostrar',exact:true}).count()&&await ui.evaluate(readBlockingValidation))return {opportunity_number:number,...detail,activities:linked,pending_modules:['activities','contact'],module_reason:'validation',validation_field:await ui.evaluate(readValidationField)};
       const filter=ui.getByRole('combobox',{name:'Mostrar',exact:true});
       const current=await filter.evaluate(e=>e.value);
       if(current!=='Todas las actividades') {
@@ -310,7 +326,7 @@ export async function captureOpenDetail(adapter,number,{activities=true}={}) {
 export async function closeCachedDetail(adapter) {
   const cancel=adapter.ui.getByRole('button',{name:'Cancelar',exact:true}).last();
   if(await cancel.count()) {
-    await cancel.press('Enter');
+    await cancel.click();
     await ready(adapter,async()=>await adapter.ui.getByRole('button',{name:'Cancelar',exact:true}).count()===0);
   }
 }

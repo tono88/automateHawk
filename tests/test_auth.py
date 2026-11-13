@@ -94,3 +94,45 @@ class AuthHttpTests(unittest.TestCase):
         self.assertNotIn('test-only',body.decode());self.assertNotIn('synthetic-token',body.decode())
         code,body,headers=self.request('/api/auth/logout','POST',{}, {'Origin':self.base})
         self.assertIn('Max-Age=0',headers['Set-Cookie'])
+
+
+class BatchReadTests(unittest.TestCase):
+    def setup_batch(self,count=3):
+        from types import SimpleNamespace
+        a=object.__new__(ScreenAuth);a.lock=RLock();a.sessions={};tasks=[]
+        a.pool=SimpleNamespace(submit=lambda fn:tasks.append(fn))
+        store=OracleReadStore()
+        store.ingest({'records':[{'opportunity_number':f'SYNTHETIC-{i}'} for i in range(count)],'scope':'Prueba sintética','partial':True})
+        store.request('details_batch');session={'store':store};a.sessions['synthetic']=session
+        return a,session,store,tasks
+    def drain(self,tasks):
+        while tasks:tasks.pop(0)()
+    def test_retries_skips_failed_record_and_continues(self):
+        from unittest.mock import patch
+        a,s,store,tasks=self.setup_batch();calls={}
+        def rpc(session,body):
+            n=body['number'];calls[n]=calls.get(n,0)+1
+            if n=='SYNTHETIC-1' or n=='SYNTHETIC-0' and calls[n]==1:raise AuthError('unavailable')
+            return {'opportunity_number':n,'schema_version':2,'fields':{'cycle':'2271'}}
+        a.session_rpc=Mock(side_effect=rpc)
+        with patch('app.auth.sleep'):
+            a.execute(s);self.drain(tasks)
+        self.assertEqual(calls,{'SYNTHETIC-0':2,'SYNTHETIC-1':3,'SYNTHETIC-2':1})
+        self.assertEqual(store.job['state'],'completed');self.assertEqual(store.job['failed'],1)
+        self.assertEqual(store.extraction_progress(),{'completed':2,'pending':1,'failed':1,'partial':0})
+        self.assertEqual(store.request('details_batch')['total'],1)
+        self.assertEqual(store.batch()['pending'],['SYNTHETIC-1'])
+    def test_outage_stops_after_three_failed_records(self):
+        from unittest.mock import patch
+        a,s,store,tasks=self.setup_batch(5);a.session_rpc=Mock(side_effect=AuthError('unavailable'))
+        with patch('app.auth.sleep'):
+            a.execute(s);self.drain(tasks)
+        self.assertEqual(a.session_rpc.call_count,9)
+        self.assertEqual(store.job['state'],'failed')
+        self.assertEqual(len(store.batch()['pending']),2)
+        self.assertEqual(store.request('details_batch')['total'],5)
+    def test_expired_session_is_not_retried(self):
+        a,s,store,tasks=self.setup_batch();a.session_rpc=Mock(side_effect=AuthError('session'))
+        a.execute(s);self.drain(tasks)
+        self.assertEqual(a.session_rpc.call_count,1);self.assertEqual(store.job['state'],'failed')
+        self.assertEqual(store.job['processed'],0);self.assertFalse(a.sessions)

@@ -73,6 +73,44 @@ class ReadModelTests(unittest.TestCase):
         for version in (True,3,'2'):
             with self.assertRaises(ValidationError):self.s.ingest_detail(dict(data,schema_version=version))
 
+    def test_failed_read_preserves_old_detail_and_snapshot_refresh_preserves_batch(self):
+        self.s.ingest(payload())
+        self.s.ingest_detail({'opportunity_number':'SYNTHETIC-001','fields':{'cycle':'2271'}})
+        self.s.request('details_batch');self.s.claim();identifier=self.s.job['id']
+        self.s.read_attempt('SYNTHETIC-001',1)
+        self.s.ingest(payload(),preserve_job=True)
+        self.assertEqual(self.s.job['id'],identifier);self.assertEqual(self.s.job['state'],'running')
+        self.s.skip_detail('SYNTHETIC-001')
+        self.assertEqual(self.s.details['SYNTHETIC-001']['fields']['cycle'],'2271')
+        self.assertEqual(self.s.job['failed'],1)
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+
+    def test_partial_read_keeps_verified_fields_and_remains_pending(self):
+        body=payload();body['records'].append({'opportunity_number':'SYNTHETIC-002'})
+        self.s.ingest(body);self.s.request('details_batch');self.s.claim()
+        self.s.ingest_detail({'opportunity_number':'SYNTHETIC-001','schema_version':2,'fields':{'cycle':'2271'},'pending_modules':['contact','activities'],'module_reason':'validation'})
+        self.assertEqual(self.s.details['SYNTHETIC-001']['fields']['cycle'],'2271')
+        self.assertEqual(self.s.batch()['pending'],['SYNTHETIC-002'])
+        self.s.ingest_detail({'opportunity_number':'SYNTHETIC-002','schema_version':2,'fields':{'cycle':'2271'}})
+        self.assertEqual(self.s.job['partial'],1);self.assertEqual(self.s.job['successful'],1)
+        self.assertEqual(self.s.extraction_progress(),{'completed':1,'pending':1,'failed':0,'partial':1})
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+        self.assertEqual(self.s.batch()['pending'],['SYNTHETIC-001'])
+
+    def test_partial_promoted_to_complete_is_counted_once(self):
+        self.s.ingest(payload());self.s.request('details_batch');self.s.claim()
+        detail={'opportunity_number':'SYNTHETIC-001','schema_version':2,'fields':{'cycle':'2271'}}
+        self.s.ingest_detail(dict(detail,pending_modules=['contact'],module_reason='validation'))
+        self.s.ingest_detail(detail)
+        self.assertEqual(self.s.job['processed'],1)
+        self.assertEqual(self.s.job['partial'],0);self.assertEqual(self.s.job['successful'],1)
+
+    def test_public_batch_does_not_show_ids_after_access_is_removed(self):
+        self.s.ingest(payload());self.s.request('details_batch')
+        self.s.records=[]
+        self.assertEqual(self.s.batch()['pending'],[])
+        self.assertEqual(self.s.batch(internal=True)['pending'],['SYNTHETIC-001'])
+
     def test_reader_cannot_propose_or_change_schedule(self):
         with self.assertRaises(PermissionError):self.s.propose({})
         with self.assertRaises(PermissionError):self.s.save_settings({'enabled':True,'interval_minutes':15})

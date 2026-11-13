@@ -1,3 +1,12 @@
+export function readValidationField(){
+  const active=document.activeElement;
+  const label=Array.from(document.querySelectorAll('label')).find(l=>l.htmlFor===active?.id)?.innerText.trim();
+  return ({'Convocatoria PA':'test_call','Ciclo de Ingreso':'cycle','Año':'year','Prueba de Admisión':'test_type','Etapa de ventas':'stage','Nombre':'name','Responsable':'owner','Fecha de cierre':'close_date'})[label]||'';
+}
+/** Only rendered Oracle validation messages; never changes form values. */
+export function readBlockingValidation(){
+  return Array.from(document.querySelectorAll('img[alt="Error"]')).some(e=>e.getClientRects().length&&/Se necesita una selecci[oó]n|Debe seleccionar al menos una opci[oó]n/.test(e.closest('tbody')?.innerText||e.closest('tr')?.innerText||''));
+}
 /** Reads the explicitly linked primary contact. Never joins people by names. */
 export function readContactProfile(){
   const norm=s=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
@@ -43,7 +52,8 @@ export async function collectRelatedContact(adapter){
   const ui=adapter.ui,contacts=ui.getByRole('link',{name:'Contactos',exact:true});
   if(!await contacts.count())return {fields:{contact_link_status:'Sin acceso al módulo de contactos'},capabilities:{}};
   await contacts.click();
-  await wait(adapter,async()=>await ui.getByRole('table',{name:'Contactos',exact:true}).count()>0);
+  await wait(adapter,async()=>await ui.getByRole('table',{name:'Contactos',exact:true}).count()>0||await ui.evaluate(readBlockingValidation));
+  if(!await ui.getByRole('table',{name:'Contactos',exact:true}).count()&&await ui.evaluate(readBlockingValidation))return {fields:{contact_link_status:'Oracle requiere corregir una selección antes de abrir el contacto'},capabilities:{},pending:true,validation_field:await ui.evaluate(readValidationField)};
   const principal=await ui.getByRole('table',{name:'Contactos',exact:true}).evaluate(t=>{
     const rows=Array.from(t.rows).map((r,index)=>({r,index})).filter(({r})=>Array.from(r.cells[0]?.querySelectorAll('img')||[]).some(i=>i.alt==='Principal'));
     return rows.length===1?rows[0].index:null;

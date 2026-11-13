@@ -11,3 +11,17 @@ El servidor bloquea la importación directa, tickets y reclamación de trabajos 
 Los fallos conservan la copia anterior. Una sesión vencida exige ingresar de nuevo; no se conservan contraseñas para repetir el acceso. La visibilidad se limita a permisos vigentes comprobados en Oracle. La copia global puede conservar datos que esa persona no pueda consultar.
 
 Ver [acceso y permisos](acceso-multiusuario.md), [guardado y roadmap](roadmap.md) y [actividades y prueba oficial](actividades-y-prueba-oficial.md). Los guardados escalares son un escritor piloto, pendiente de la prueba institucional real; las actividades siguen siendo locales.
+
+
+## Recuperación de detalles pendientes
+
+La carga usa un registro de avance por usuario y número oficial en PostgreSQL. Cada lectura admite tres intentos; un fallo deja esa oportunidad pendiente y permite continuar con las demás. Tres oportunidades consecutivas fallidas pausan el lote para evitar insistir durante una caída. La expiración de sesión detiene la lectura inmediatamente y requiere volver a ingresar, sin guardar credenciales.
+
+Completar datos de la cartera retoma las oportunidades sin una extracción ampliada confirmada, incluyendo los fallos anteriores. Los registros confirmados no se descargan otra vez por haber reiniciado el servidor. El estado de extracción no concede acceso a valores cuyos permisos vencieron: la renovación del permiso de consulta es independiente. Si vence la autorización básica durante un lote largo, se vuelve a consultar la lista antes de continuar.
+
+Los filtros Estado de extracción permiten revisar Detalles por descargar y Lecturas con incidencias. El contador distingue recuperados, pendientes e incidencias; un lote terminado con incidencias no equivale a una cartera completa. Los valores anteriores se conservan ante errores de lectura. Los reintentos se aplican exclusivamente a consultas; las escrituras inciertas en Oracle nunca se repiten automáticamente.
+
+El adaptador abre Resumen explícitamente al entrar a una oportunidad, porque Oracle puede conservar Contactos u otra pestaña del registro anterior. Tampoco vuelve a alternar una búsqueda avanzada que ya está desplegada.
+
+
+Si Oracle exige completar una selección al cambiar de sección, el lector conserva los campos ya verificados y marca los módulos de contacto/actividades como pendientes. No introduce valores supuestos ni guarda el formulario. Las lecturas parciales se distinguen de las completas y quedan al final del siguiente lote, después de los registros aún no consultados. La selección obligatoria debe corregirse en Oracle con un valor oficial para permitir consultar las secciones bloqueadas.

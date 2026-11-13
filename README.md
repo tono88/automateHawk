@@ -18,6 +18,8 @@ La extracción ampliada abre el contacto principal desde su relación con la opo
 
 Recibos, autorizaciones, pagos efectivos, asistencia, cartas y otros campos todavía requieren una fuente verificada. No se deducen de importes, calificaciones ni etapas comerciales. Matrícula muestra referencias comerciales o del perfil hasta conciliarlas con la fuente académica. Los resúmenes cuentan oportunidades y no deduplican personas por sus nombres.
 
+La carga ampliada conserva el avance por usuario en PostgreSQL, reintenta cada lectura hasta tres veces y continúa con otras oportunidades cuando una falla. Tras tres fallos consecutivos pausa el lote. El botón Completar datos de la cartera permite retomar lo pendiente después de un nuevo ingreso. Los filtros de extracción distinguen lo pendiente y las incidencias; completar una lectura no renueva indefinidamente sus permisos de visualización.
+
 ## Edición y actividades
 
 Guardar en un campo escalar habilitado de la lista envía una solicitud por pantalla de Oracle: nombre de oportunidad, etapa comercial, probabilidad o fecha de cierre. Antes de guardar se verifica permiso y conflicto; después se relee el registro. El valor global solo cambia al confirmar el resultado. Las escrituras al mismo registro se serializan; un resultado incierto no se repite automáticamente y puede verificarse desde Cambios en Oracle.

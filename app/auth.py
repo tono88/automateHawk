@@ -4,7 +4,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 from secrets import token_urlsafe
 from threading import RLock,Lock
-from time import monotonic
+from time import monotonic,sleep
 from http.cookies import SimpleCookie
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError
@@ -133,13 +133,46 @@ class ScreenAuth:
     def execute(self,session):
         store=session['store'];job=store.claim()
         if not job:return
+        consecutive_failures=0
         def run():
+            nonlocal consecutive_failures
             try:
                 if job['kind']=='details_batch':
-                    pending=store.batch()['pending']
+                    pending=store.batch(internal=True)['pending']
                     if pending:
-                        result=self.session_rpc(session,{'kind':'detail','number':pending[0],'reuse':True});store.ingest_detail(result)
-                        if store.batch()['pending']:self.pool.submit(run)
+                        number=pending[0]
+                        # Renew the list grant when a long batch crosses its expiry.
+                        if store.repository and hasattr(store.repository,'grants') and number not in store.repository.grants():
+                            store.repository.snapshot_started=datetime.now(timezone.utc)
+                            fresh=self.session_rpc(session,{'kind':'opportunities'})
+                            if 'export_html' in fresh:
+                                from .oracle_export import parse_export
+                                fresh=parse_export(fresh['export_html'],fresh['scope'])
+                            store.repository.observed_fields=fresh.pop('visible_fields',{})
+                            store.ingest(fresh,preserve_job=True)
+                            if number not in store.repository.grants():
+                                store.skip_detail(number,'permission',persist=False)
+                                if store.batch(internal=True)['pending']:self.pool.submit(run)
+                                return
+                        for attempt in range(1,4):
+                            store.read_attempt(number,attempt)
+                            try:
+                                result=self.session_rpc(session,{'kind':'detail','number':number,'reuse':True})
+                            except AuthError as error:
+                                if error.code in ('session','credentials-or-challenge'):raise
+                                if attempt<3 and error.code in ('unavailable','busy','layout'):
+                                    sleep(attempt)
+                                    continue
+                                store.skip_detail(number,'permission' if error.code=='permission' else 'timeout')
+                                consecutive_failures+=1
+                                break
+                            else:
+                                store.ingest_detail(result);consecutive_failures=0
+                                break
+                        if consecutive_failures>=3 and store.batch(internal=True)['pending']:
+                            store.fail('timeout')
+                            store.job['message']='Oracle no está respondiendo. Se conservan el avance y los pendientes; puedes retomar la carga con tu sesión.'
+                        elif store.batch(internal=True)['pending']:self.pool.submit(run)
                 else:
                     store.repository.snapshot_started=datetime.now(timezone.utc)
                     result=self.session_rpc(session,{'kind':job['kind'],'number':job.get('opportunity_number')})

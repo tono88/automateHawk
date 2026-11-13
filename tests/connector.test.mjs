@@ -44,3 +44,37 @@ test('keeps Spanish accents and symbols from UTF-8 and legacy export encodings',
  assert.throws(()=>decodeExport(Buffer.from('<meta charset="utf-8">Muñoz','latin1')));
  assert.throws(()=>decodeExport(Buffer.from('<meta charset="unsupported">')));
 });
+import {openCachedDetail,readSummaryDetail,configureQuery} from '../connector/oracle-sync.mjs';
+test('opens Summary explicitly when Oracle remembers the Contacts subtab',async()=>{
+ let summarySelected=false;
+ const locator={nth(){return this;},getByRole(){return this;},press:async()=>{}};
+ const ui={evaluate:async(fn,arg)=>arg?{table:0,row:0}:fn===readSummaryDetail&&summarySelected?{fields:{}}:null,
+ getByRole:(role,{name})=>name==='Resumen'?{count:async()=>1,click:async()=>{summarySelected=true;}}:role==='button'?{count:async()=>1}:locator};
+ await openCachedDetail({ui,observe:async()=>{},scrollGrid:async()=>{}},'SYNTHETIC-001');
+ assert.equal(summarySelected,true);
+});
+test('does not collapse an advanced search that is already expanded',async()=>{
+ let toggles=0;
+ const make=(role,name)=>({last(){return this;},count:async()=>name==='Cancelar'?0:1,click:async()=>{},fill:async()=>{}});
+ const ui={getByRole:(role,{name})=>make(role,name),evaluate:async()=>grid()};
+ await configureQuery({ui,observe:async()=>{},clickAdvanced:async()=>{toggles++;}});
+ assert.equal(toggles,0);
+});
+import {readBlockingValidation,readValidationField} from '../connector/contact-reader.mjs';
+test('detects rendered Oracle validation and reports only an allowed field key',()=>{
+ const previous=globalThis.document;
+ try{
+  globalThis.document={activeElement:{id:'synthetic-control'},querySelectorAll:selector=>selector==='label'?[{htmlFor:'synthetic-control',innerText:'Convocatoria PA'}]:[{getClientRects:()=>[{}],closest:()=>({innerText:'Error: Se necesita una selección. Debe seleccionar al menos una opción.'})}]};
+  assert.equal(readBlockingValidation(),true);assert.equal(readValidationField(),'test_call');
+  globalThis.document.querySelectorAll=()=>[];
+  assert.equal(readBlockingValidation(),false);assert.equal(readValidationField(),'');
+ }finally{globalThis.document=previous;}
+});
+
+test('opens advanced filters even when an old hide label remains in the page',async()=>{
+ let expanded=false,toggles=0;
+ const make=(name)=>({last(){return this;},count:async()=>name==='Cancelar'?0:name==='Juego de registros'?(expanded?1:0):1,click:async()=>{},fill:async()=>{}});
+ const ui={getByRole:(role,{name})=>make(name),evaluate:async()=>grid()};
+ await configureQuery({ui,observe:async()=>{},clickAdvanced:async()=>{toggles++;expanded=true;}});
+ assert.equal(toggles,1);assert.equal(expanded,true);
+});

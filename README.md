@@ -24,7 +24,7 @@ La carga ampliada conserva el avance por usuario en PostgreSQL, reintenta cada l
 
 Guardar en un campo escalar habilitado de la lista envía una solicitud por pantalla de Oracle: nombre de oportunidad, etapa comercial, probabilidad o fecha de cierre. Antes de guardar se verifica permiso y conflicto; después se relee el registro. El valor global solo cambia al confirmar el resultado. Las escrituras al mismo registro se serializan; un resultado incierto no se repite automáticamente y puede verificarse desde Cambios en Oracle.
 
-El escritor es piloto y requiere la prueba institucional de guardado real con los responsables. Se verificaron sus controles y persistencia con datos ficticios; no se guardaron cambios reales durante el desarrollo.
+El escritor es piloto y requiere la prueba institucional de guardado real con los responsables. Se verificaron sus controles y persistencia con datos ficticios. También se comprobó una corrección puntual autorizada por pantalla: Convocatoria PA vacía a No Aplica, con Fecha PA vacía y relectura posterior. Esa comprobación no certifica los demás escritores piloto.
 
 Seguimientos, citas e informes de interacción tienen formularios locales persistentes, con creación, consulta, edición y estados. **Continúan sin envío a Oracle ni notificaciones** hasta validar sus vínculos, catálogos y efectos. La sección demo y el simulador conservan únicamente sus datos sintéticos y se separan por sesión.
 

@@ -35,3 +35,8 @@ Las vistas operativas se integran por proceso; las jornadas se seleccionan dentr
 El recorrido de lectura abre la oportunidad por número oficial, consulta el diagnóstico y asistencia económica, revisa actividades y abre el perfil del contacto principal desde la relación Contactos. Se verificó el retorno mediante Cancelar, sin guardar cambios. La estructura ampliada admite campos de contacto, resultados y un segundo tipo de asistencia. Cada registro informa su versión de extracción para reanudar cargas anteriores.
 
 La prueba de restauración del respaldo se realiza fuera del repositorio. La extracción masiva y los campos aún sin fuente se informan por su cobertura real; esta validación no certifica una importación completa ni el contenido de todos los registros. No se recopilan contraseñas de aspirantes ni se infieren pagos, asistencia o decisiones académicas.
+
+
+## Corrección puntual de convocatoria
+
+Se verificó por pantalla un guardado expresamente autorizado de Convocatoria PA vacía a la opción existente No Aplica, después de confirmar que Fecha PA también estaba vacía. Se compararon los demás campos observados antes y después: no cambiaron. Al reabrir, el valor permaneció y fue posible consultar actividades y el contacto principal. No se introdujo una fecha ficticia. Esta verificación puntual no amplía el catálogo de escritores automáticos habilitados.

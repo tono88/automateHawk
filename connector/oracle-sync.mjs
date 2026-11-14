@@ -130,7 +130,7 @@ export async function configureQuery(adapter) {
   adapter.phase='open_query';
   await openOpportunityQuery(adapter);
   adapter.phase='advanced_ready';
-  await ready(adapter,async()=>await ui.getByRole('button',{name:'Mostrar búsqueda avanzada',exact:true}).count()>0||await ui.getByRole('button',{name:'Ocultar búsqueda avanzada',exact:true}).count()>0);
+  await ready(adapter,async()=>await ui.getByRole('button',{name:'Mostrar búsqueda avanzada',exact:true}).count()>0||await ui.getByRole('button',{name:'Ocultar búsqueda avanzada',exact:true}).count()>0||await ui.getByRole('checkbox',{name:'Mostrar búsqueda avanzada',exact:true}).count()>0||await ui.getByRole('checkbox',{name:'Ocultar búsqueda avanzada',exact:true}).count()>0);
   adapter.phase='advanced_toggle';
   if(!await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).count())await clickAdvanced();
   await observe();

@@ -78,3 +78,15 @@ test('opens advanced filters even when an old hide label remains in the page',as
  await configureQuery({ui,observe:async()=>{},clickAdvanced:async()=>{toggles++;expanded=true;}});
  assert.equal(toggles,1);assert.equal(expanded,true);
 });
+
+import {ensureAdvancedSearch} from '../connector/oracle-query.mjs';
+test('opens the checkbox variant of Oracle advanced search',async()=>{
+ let expanded=false,checked=0;
+ const ui={getByRole:(role,{name})=>({first(){return this;},count:async()=>name==='Juego de registros'?(expanded?1:0):role==='checkbox'&&name==='Mostrar búsqueda avanzada'?1:0,check:async()=>{checked++;expanded=true;}})};
+ await ensureAdvancedSearch(ui,async()=>{});
+ assert.equal(checked,1);assert.equal(expanded,true);
+});
+test('leaves already available advanced filters unchanged',async()=>{
+ const ui={getByRole:()=>({count:async()=>1})};
+ await ensureAdvancedSearch(ui,async()=>{throw Error('Should not toggle');});
+});

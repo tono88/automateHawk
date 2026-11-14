@@ -1,3 +1,4 @@
+import {ensureAdvancedSearch} from './oracle-query.mjs';
 import {decodeExport} from './export-codec.mjs';
 /** Oracle screen gateway: no Oracle APIs, persistent profiles, recordings or raw logs. */
 import {applyScalarChange} from './oracle-write.mjs';
@@ -19,7 +20,7 @@ async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){cle
 function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
 function trusted(page){return new URL(page.url()).origin===target.origin;}
 async function authenticated(page){return trusted(page)&&await page.getByRole('link',{name:'Página Inicial',exact:true}).count()>0;}
-function adapter(page){return {ui:page,observe:async()=>{await page.locator('body').waitFor({state:'visible'});await page.waitForTimeout(300);},clickAdvanced:async()=>{const scope=page.getByRole('combobox',{name:'Juego de registros',exact:true});if(await scope.count())return;const show=page.getByRole('button',{name:'Mostrar búsqueda avanzada',exact:true}).first(),hide=page.getByRole('button',{name:'Ocultar búsqueda avanzada',exact:true}).first();if(await show.count())await show.click();else if(await hide.count()){await hide.click();await show.waitFor({state:'visible',timeout:15000});await show.click();}else throw Error('layout');},scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}
+function adapter(page){return {ui:page,observe:async()=>{await page.locator('body').waitFor({state:'visible'});await page.waitForTimeout(300);},clickAdvanced:async()=>ensureAdvancedSearch(page,()=>page.waitForTimeout(300)),scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}
 async function login(body){
   if(sessions.size+pendingLogins>=MAX_SESSIONS)throw Error('capacity');
   pendingLogins++;let context,page;
@@ -29,12 +30,13 @@ async function login(body){
   await context.route('**/*',async route=>{const u=new URL(route.request().url());if(route.request().method()==='POST'&&u.origin!==target.origin&&u.origin!==loginOrigin)return route.abort();return route.continue();});
     page=await context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});
     if(!trusted(page)&&new URL(page.url()).origin!==loginOrigin)throw Error('login-destination');
-    const user=page.locator('#userid,[id="idcs-signin-basic-signin-form-username|input"]'),password=page.locator('input[type="password"]');
-    await user.first().waitFor({state:'visible',timeout:20000}).catch(()=>{});
+    const user=page.locator('#userid,[id="idcs-signin-basic-signin-form-username|input"]').filter({visible:true}),password=page.locator('input[type="password"]').filter({visible:true});
+    await Promise.all([user.first().waitFor({state:'visible',timeout:20000}),password.first().waitFor({state:'visible',timeout:20000})]).catch(()=>{});
+    if(!trusted(page)&&new URL(page.url()).origin!==loginOrigin)throw Error('login-destination');
     if(await user.count()!==1||await password.count()!==1)throw Error('login-layout');
     await user.fill(body.username);await password.fill(body.password);
     body.password='';
-    const submit=page.getByRole('button',{name:/^(Sign In|Iniciar sesión|Iniciar sesión segura|Acceder)$/i});
+    const submit=page.getByRole('button',{name:/^(Sign In|Iniciar sesión|Iniciar sesión segura|Acceder|Next)$/i});
     if(await submit.count())await submit.click();else await password.press('Enter');
     try{await page.getByRole('link',{name:'Página Inicial',exact:true}).waitFor({state:'visible',timeout:45000});}catch{throw Error('credentials-or-challenge');}
     if(!await authenticated(page))throw Error('session');

@@ -82,7 +82,7 @@ class ScopedRepository(PostgresRepository):
         return {r['opportunity_number']:{k:v for k,v in r.items() if k!='opportunity_number'} for r in rows if r['opportunity_number'] in allowed}
     def save_read_progress(self,number,state,attempts=0,error_code=''):
         self.require(number)
-        if state not in ('reading','completed','partial','failed') or error_code not in ('','timeout','layout','permission','unavailable'):raise ValueError('Invalid read outcome')
+        if state not in ('reading','completed','partial','failed') or error_code not in ('','timeout','layout','permission','unavailable','contact-unavailable'):raise ValueError('Invalid read outcome')
         with self.connect() as c:
             c.execute("""INSERT INTO detail_read_progress(principal,opportunity_number,state,attempts,error_code)
               VALUES(%s,%s,%s,%s,%s) ON CONFLICT(principal,opportunity_number) DO UPDATE

@@ -1,7 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {normalizeGrid,collectOpportunities,readOpportunityGrid} from '../connector/oracle-sync.mjs';
+import {readContactAccessFailure} from '../connector/contact-reader.mjs';
 const grid=(number='SYNTHETIC-001')=>({headers:['Número de oportunidad','Nombre','Etapa de ventas','Correo electrónico de responsable'],rows:[[number,'Oportunidad ficticia','01 - Interesado','ficticio@example.invalid']]});
+test('only a visible explicit contact access error is classified as unavailable',()=>{
+ const previous=global.document;
+ const message='No puede acceder a este registro porque se suprimió o ya no tiene acceso a él.';
+ try{
+  for(const [text,visible,expected] of [[message,true,true],[message,false,false],['Se necesita una selección.',true,false]]){
+   global.document={querySelectorAll:()=>[{innerText:text,getClientRects:()=>visible?[{}]:[]}]};
+   assert.equal(readContactAccessFailure(),expected);
+  }
+ }finally{global.document=previous;}
+});
 test('collector excludes fields outside the allowlist',()=>{
   const input=grid();input.headers.push('Campo desconocido');input.rows[0].push('descartar');
   const [row]=normalizeGrid(input);

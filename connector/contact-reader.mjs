@@ -1,4 +1,10 @@
 import {waitForRendered} from './ui-wait.mjs';
+/** Oracle's explicit deleted-or-inaccessible message is a terminal source limit. */
+export function readContactAccessFailure(){
+  return Array.from(document.querySelectorAll('div,span,td')).some(e=>e.getClientRects().length&&
+    /^No puede acceder a este registro porque se suprimio o ya no tiene acceso a el\.?$/i.test(
+      e.innerText.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim()));
+}
 export function readValidationField(){
   const active=document.activeElement;
   const label=Array.from(document.querySelectorAll('label')).find(l=>l.htmlFor===active?.id)?.innerText.trim();
@@ -62,7 +68,12 @@ export async function collectRelatedContact(adapter){
   if(principal===null)return {fields:{contact_link_status:'No hay un contacto principal único en la relación'},capabilities:{}};
   const before=await ui.getByRole('button',{name:'Cancelar',exact:true}).count();
   await ui.getByRole('table',{name:'Contactos',exact:true}).getByRole('row').nth(principal).getByRole('cell').nth(1).getByRole('link').click();
-  await wait(adapter,async()=>await ui.getByRole('link',{name:'Perfil',exact:true}).count()>0);
+  await wait(adapter,async()=>await ui.getByRole('link',{name:'Perfil',exact:true}).count()>0||await ui.evaluate(readContactAccessFailure));
+  if(await ui.evaluate(readContactAccessFailure)){
+    await ui.getByRole('button',{name:'Aceptar',exact:true}).last().press('Enter');
+    await wait(adapter,async()=>!await ui.evaluate(readContactAccessFailure));
+    return {fields:{contact_link_status:'Contacto eliminado o no accesible según Oracle'},capabilities:{}};
+  }
   try{
     await ui.getByRole('link',{name:'Perfil',exact:true}).click();
     await wait(adapter,async()=>await ui.getByRole('button',{name:'Ampliar Información Adicional',exact:true}).count()>0||await ui.getByRole('button',{name:'Reducir Información Adicional',exact:true}).count()>0);

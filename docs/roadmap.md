@@ -59,7 +59,7 @@ Implementados los formularios de seguimiento, cita e informe de interacción sob
 
 La copia activa es única en PostgreSQL, con permisos por usuario y campo guardados con vencimiento. La lista comienza sin filtros por responsable. El login verifica la identidad por pantalla y reutiliza permisos vigentes; el escritor vuelve a verificarlos al guardar. Los detalles de funcionamiento y las limitaciones están en [acceso multiusuario](acceso-multiusuario.md).
 
-La carga masiva autenticada usa la acción Exportar de Oracle y procesa su HTML de Excel en memoria, hasta 1,000 filas por exportación. La lectura por desplazamiento permanece como referencia. La cobertura sigue limitada al filtro aplicado en Oracle; no se presenta como un volcado certificado de todo el CRM.
+La carga masiva usa Exportar de Oracle, consulta todos los estados de 2026 por intervalos y subdivide los intervalos densos. Su manifiesto por usuario se guarda en PostgreSQL; se distingue el inventario del año del detalle disponible por ficha. La lectura por desplazamiento permanece como referencia. La cobertura sigue limitada al filtro aplicado en Oracle; no se presenta como un volcado certificado de todo el CRM.
 
 ## Avance en sincronización y medición
 

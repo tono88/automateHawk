@@ -36,9 +36,11 @@ class OracleReadStore:
         self.details={}
         self.detail_states={}
         self.settings={'enabled':False,'interval_minutes':15,'detail_ttl_minutes':30,'reconcile_hours':24}
+        self.listing_coverage=None
         if repository:
             self._reload()
             self.settings.update(repository.settings().get('sync',{}))
+            self.listing_coverage=repository.settings().get('listing_coverage:'+getattr(repository,'principal','local'))
 
     def _reload(self):
         state=self.repository.load()
@@ -138,7 +140,18 @@ class OracleReadStore:
                                  worker_online=bool(self.worker_seen and monotonic()-self.worker_seen<90),
                                  role=self.role,can_propose=self.role=='editor' and bool(self.repository),settings=self.settings,
                                  retry_in_seconds=max(0,int(self.retry_after-monotonic())),
-                                 detail_count=len(self.details),extraction=self.extraction_progress(),performance=self.performance(),database=self.repository.summary() if self.repository else None))
+                                 detail_count=len(self.details),extraction=self.extraction_progress(),performance=self.performance(),
+                                 source_limits={'contacts_unavailable':sum(self.read_outcomes.get(r['opportunity_number'],{}).get('error_code')=='contact-unavailable' for r in self.records)},
+                                 listing_coverage=self.listing_coverage,
+                                 database=self.repository.summary() if self.repository else None))
+
+    def record_listing_coverage(self,coverage):
+        with self.lock:
+            self.listing_coverage=deepcopy(coverage)
+            if self.repository:self.repository.save_setting('listing_coverage:'+getattr(self.repository,'principal','local'),coverage)
+            if self.job and self.job.get('state')=='running':
+                self.claimed_at=monotonic()
+                self.job['message']=f"Inventario 2026: {coverage['partitions_finished']} intervalos consultados · {coverage['row_count']} oportunidades identificadas."
 
     def record_timing(self,seconds):
         with self.lock:
@@ -192,7 +205,7 @@ class OracleReadStore:
         with self.lock:
             if self.repository:self.repository.save_detail(number,payload);self._reload()
             else:self.details[number]=dict(payload,loaded_at=datetime.now(timezone.utc).isoformat())
-            if body.get('schema_version',1)>=2:self._read_outcome(number,'partial' if modules else 'completed')
+            if body.get('schema_version',1)>=2:self._read_outcome(number,'partial' if modules else 'completed',error_code='contact-unavailable' if fields.get('contact_link_status')=='Contacto eliminado o no accesible según Oracle' else '')
             if not self.job:self.request()
             if self.job.get('kind')=='details_batch' and number in self.batch_numbers:
                 self.batch_partial.discard(number);self.batch_done.discard(number)

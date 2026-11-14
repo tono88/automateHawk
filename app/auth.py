@@ -97,7 +97,7 @@ class ScreenAuth:
             except AuthError:pass
     def batch_active(self,session):
         job=session['store'].job or {}
-        return (job.get('kind')=='details_batch' and job.get('state')=='running'
+        return (job.get('kind') in ('details_batch','opportunities') and job.get('state')=='running'
                 and session.get('batch_job')==job.get('id')
                 and self.clock()<session.get('batch_deadline',0)
                 and self.clock()<session.get('created',0)+28800)
@@ -147,7 +147,7 @@ class ScreenAuth:
     def execute(self,session):
         store=session['store'];job=store.claim()
         if not job:return
-        if job['kind']=='details_batch':
+        if job['kind'] in ('details_batch','opportunities'):
             now=self.clock()
             session['batch_job']=job['id']
             session['batch_deadline']=min(session['created']+28800,now+14400)
@@ -170,13 +170,7 @@ class ScreenAuth:
                             with session['grant_lock']:
                                 grant=store.repository.grants().get(number)
                                 if not grant or (grant['read_until']-datetime.now(timezone.utc)).total_seconds()<180:
-                                    store.repository.snapshot_started=datetime.now(timezone.utc)
-                                    fresh=self.session_rpc(session,{'kind':'opportunities'})
-                                    if 'export_html' in fresh:
-                                        from .oracle_export import parse_export
-                                        fresh=parse_export(fresh['export_html'],fresh['scope'])
-                                    store.repository.observed_fields=fresh.pop('visible_fields',{})
-                                    store.ingest(fresh,preserve_job=True)
+                                    self.refresh_listing(session)
                                     if number not in store.repository.grants():
                                         store.skip_detail(number,'permission',persist=False)
                                         return
@@ -201,6 +195,11 @@ class ScreenAuth:
                         if consecutive_failures>=3 and store.batch(internal=True)['pending']:
                             store.fail('timeout')
                             store.job['message']='Oracle no está respondiendo. Se conservan el avance y los pendientes; puedes retomar la carga con tu sesión.'
+                elif job['kind']=='opportunities':
+                    coverage=self.refresh_listing(session)
+                    store.job.update(state='completed' if coverage['complete'] else 'failed',
+                      message=f"Inventario 2026: {coverage['row_count']} oportunidades identificadas en todos los estados."+('' if coverage['complete'] else ' Hay intervalos que exceden el límite de exportación.'),
+                      finished_at=datetime.now(timezone.utc).isoformat())
                 else:
                     store.repository.snapshot_started=datetime.now(timezone.utc)
                     result=self.session_rpc(session,{'kind':job['kind'],'number':job.get('opportunity_number')})
@@ -227,3 +226,18 @@ class ScreenAuth:
                     self.pool.submit(run,lane)
         self.pool.submit(run)
         if job['kind']=='details_batch':self.pool.submit(run,1)
+
+    def refresh_listing(self,session):
+        from .oracle_scope import inventory
+        from .oracle_export import parse_export
+        store=session['store']
+        store.repository.snapshot_started=datetime.now(timezone.utc)
+        def fetch(query):
+            result=self.session_rpc(session,{'kind':'opportunities','query':query,'reuse':True})
+            if 'export_html' in result:return parse_export(result['export_html'],result['scope'])
+            if result.get('empty_verified') is True:return {'records':[],'empty_verified':True}
+            raise AuthError('unavailable')
+        def ingest(result):
+            store.repository.observed_fields=result.pop('visible_fields',{})
+            store.ingest(result,preserve_job=True)
+        return inventory(fetch,ingest,store.record_listing_coverage)

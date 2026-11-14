@@ -142,6 +142,7 @@ export async function configureQuery(adapter) {
   }
   adapter.phase='run_search';await ui.getByRole('button',{name:'Buscar',exact:true}).last().click();await observe();
   await ready(adapter,async()=>{const grid=await ui.evaluate(readOpportunityGrid);return !!grid?.rows?.length;});
+  if(adapter.applyScope)await adapter.applyScope();
 }
 
 /** Starts a reusable local bridge. Status and data remain in process memory. */

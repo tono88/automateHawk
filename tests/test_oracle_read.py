@@ -105,6 +105,20 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(self.s.job['processed'],1)
         self.assertEqual(self.s.job['partial'],0);self.assertEqual(self.s.job['successful'],1)
 
+    def test_explicit_source_denial_preserves_opportunity_and_reports_contact_limit(self):
+        self.s.ingest(payload());self.s.request('details_batch');self.s.claim()
+        detail={'opportunity_number':'SYNTHETIC-001','schema_version':2,
+          'fields':{'cycle':'2271','contact_link_status':'Contacto eliminado o no accesible según Oracle'},
+          'activities':{'queried':True,'rows':[]}}
+        self.s.ingest_detail(detail)
+        self.assertEqual(self.s.details['SYNTHETIC-001']['fields']['cycle'],'2271')
+        self.assertNotIn('contact_email',self.s.details['SYNTHETIC-001']['fields'])
+        self.assertEqual(self.s.status()['source_limits']['contacts_unavailable'],1)
+        self.assertEqual(self.s.status()['job']['state'],'completed')
+        detail['fields']['contact_link_status']='Contacto principal verificado desde la oportunidad'
+        self.s.ingest_detail(detail)
+        self.assertEqual(self.s.status()['source_limits']['contacts_unavailable'],0)
+
     def test_public_batch_does_not_show_ids_after_access_is_removed(self):
         self.s.ingest(payload());self.s.request('details_batch')
         self.s.records=[]

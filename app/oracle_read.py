@@ -164,6 +164,8 @@ class OracleReadStore:
         remaining=len(self.batch(internal=True)['pending']) if self.job and self.job.get('kind')=='details_batch' else 0
         average=sum(samples)/len(samples) if samples else None
         elapsed=monotonic()-self.job_clock if self.job_clock else 0
+        if self.job.get('finished_at') and self.job.get('started_at'):
+            elapsed=max(0,(datetime.fromisoformat(self.job['finished_at'])-datetime.fromisoformat(self.job['started_at'])).total_seconds())
         recovered=len(self.batch_done|self.batch_partial)
         rate=recovered/elapsed if recovered and elapsed>0 else None
         return {'samples':len(samples),'mean_read_seconds':round(average,2) if average else None,

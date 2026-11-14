@@ -69,6 +69,11 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/snapshot': return self.respond(200,self.demo.snapshot())
         if path=='/api/oracle/status': return self.respond(200,self.oracle.status())
         if path=='/api/oracle/snapshot': return self.respond(200,self.oracle.snapshot())
+        if path=='/api/oracle/workspace':
+            repo=self.oracle.repository
+            return self.respond(200,{'snapshot':self.oracle.snapshot(),
+                'changes':repo.changes() if repo else [],
+                'activities':repo.local_activities() if repo else [],'schemas':ACTIVITY_SCHEMA})
         if path=='/api/oracle/catalog':return self.respond(200,{'views':VIEWS,'fields':{k:{'label':v[0],'module':v[1]} for k,v in DETAIL_FIELDS.items()},'edit_fields':sorted(EDIT_FIELDS)})
         if path=='/api/oracle/changes':return self.respond(200,{'changes':self.oracle.repository.changes() if self.oracle.repository else []})
         if path=='/api/oracle/activities':return self.respond(200,{'schemas':ACTIVITY_SCHEMA,'activities':self.oracle.repository.local_activities() if self.oracle.repository else []})

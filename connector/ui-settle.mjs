@@ -1,5 +1,5 @@
 /** Wait for user-triggered POST updates; ignore Oracle's persistent GET channel.
- * Observes request lifecycle only, never URLs in logs, bodies, headers or APIs.
+ * Observes lifecycle only; diagnostics omit query values, bodies and headers.
  */
 const waiters=new WeakMap();
 export function uiSettler(page,origin,{quietMs=600,timeoutMs=20000,now=()=>performance.now(),pause=ms=>page.waitForTimeout(ms)}={}){
@@ -20,5 +20,6 @@ export function uiSettler(page,origin,{quietMs=600,timeoutMs=20000,now=()=>perfo
       await pause(Math.min(100,Math.max(1,timeoutMs-(now()-start))));
     }
   };
+  settle.pending=()=>Array.from(pending).map(request=>({path:new URL(request.url()).pathname.replace(/[0-9]{4,}/g,'#'),type:request.resourceType?.()||'unknown'}));
   waiters.set(page,settle);return settle;
 }

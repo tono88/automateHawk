@@ -1,9 +1,9 @@
 'use strict';
 window.UnisOracleLive = (() => {
   let state, catalog, changes = [], root, view = 'base', query = '', cycle = '', advisor = '',
-    stage = '', oracleStatus = '', faculty = '', testDate = '', page = 1, selected = null, module = 'general',
+    stage = '', oracleStatus = '', segment = '', faculty = '', testDate = '', page = 1, selected = null, module = 'general',
     inline = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, cohort = '', detailFilter = '';
-  const labels = {name:'Nombre de oportunidad',owner:'Asesor',stage:'Etapa',probability:'Probabilidad',close_date:'Fecha de cierre'};
+  const labels = {segment:'Segmento',name:'Nombre de oportunidad',owner:'Asesor',stage:'Etapa',probability:'Probabilidad',close_date:'Fecha de cierre'};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const time = value => value ? new Date(value).toLocaleString('es-GT', {timeZone:'America/Guatemala'}) : 'Sin consultar';
   const rawValue = (row, key) => row[key] ?? state.details?.[row.opportunity_number]?.fields?.[key] ?? '';
@@ -30,10 +30,16 @@ window.UnisOracleLive = (() => {
     if (!response.ok) throw Error(data.error || 'No se pudo completar la operación.');
     return data;
   }
+  let refreshFlight = null;
   async function refresh() {
-    const [snapshot, queue, local] = await Promise.all([request('/api/oracle/snapshot'), request('/api/oracle/changes'),request('/api/oracle/activities')]);
-    state = snapshot; changes = queue.changes; activities=local.activities;activitySchemas=local.schemas;
-    if (!catalog) catalog = await request('/api/oracle/catalog');
+    if(refreshFlight)return refreshFlight;
+    const work=(async()=>{
+      const workspace=await request('/api/oracle/workspace');
+      state=workspace.snapshot;changes=workspace.changes;activities=workspace.activities;activitySchemas=workspace.schemas;
+      if (!catalog) catalog = await request('/api/oracle/catalog');
+    })();
+    refreshFlight=work;
+    try{return await work;}finally{if(refreshFlight===work)refreshFlight=null;}
   }
   async function render(target) {
     root=target;const generation=window.HubAuth.generation;
@@ -47,6 +53,8 @@ window.UnisOracleLive = (() => {
       if(detailFilter==='pending'&&extracted||detailFilter==='failed'&&state.read_states?.[row.opportunity_number]?.state!=='failed')return false;
       if(faculty && value(row,'faculty')!==faculty)return false;
       if(oracleStatus && row.status!==oracleStatus)return false;
+      if(segment && row.segment!==segment)return false;
+      if(detailFilter==='contact-unavailable'&&state.read_states?.[row.opportunity_number]?.error_code!=='contact-unavailable')return false;
       if(cycle && value(row,'cycle')!==cycle || advisor && row.owner!==advisor || stage && row.stage!==stage || testDate && value(row,'test_date')!==testDate) return false;
       return true;
     });
@@ -83,10 +91,10 @@ window.UnisOracleLive = (() => {
     };
   }
   function filters() {
-    return `<div class="filters"><input id="op-search" aria-label="Buscar en cartera" placeholder="Buscar por nombre, número, cuenta o asesor…" value="${esc(query)}"><select id="op-faculty" aria-label="Facultad">${options(state.records.map(r=>value(r,'faculty')),faculty,'Todas las facultades disponibles')}</select><select id="op-cycle" aria-label="Ciclo de ingreso">${options(state.records.map(r=>value(r,'cycle')),cycle,'Todos los ciclos disponibles')}</select><select id="op-advisor" aria-label="Asesor asignado">${options(state.records.map(r=>r.owner),advisor,'Todos los asesores')}</select><select id="op-stage" aria-label="Etapa comercial">${options(state.records.map(r=>r.stage),stage,'Todas las etapas')}</select><select id="op-status" aria-label="Estado de Oracle">${options(state.records.map(r=>r.status),oracleStatus,'Todos los estados de Oracle')}</select>${view==='tests'?`<select id="op-test-date" aria-label="Fecha de prueba">${options(state.records.map(r=>value(r,'test_date')),testDate,'Todas las fechas disponibles')}</select>`:''}<select id="op-detail-filter" aria-label="Estado de extracción"><option value="">Toda la cartera</option><option value="pending" ${detailFilter==='pending'?'selected':''}>Detalles por descargar</option><option value="failed" ${detailFilter==='failed'?'selected':''}>Lecturas con incidencias</option></select><button id="op-clear">Limpiar</button></div>`;
+    return `<div class="filters"><input id="op-search" aria-label="Buscar en cartera" placeholder="Buscar por nombre, número, cuenta o asesor…" value="${esc(query)}"><select id="op-segment" aria-label="Segmento">${options(state.records.map(r=>r.segment),segment,'Todos los segmentos')}</select><select id="op-faculty" aria-label="Facultad">${options(state.records.map(r=>value(r,'faculty')),faculty,'Todas las facultades disponibles')}</select><select id="op-cycle" aria-label="Ciclo de ingreso">${options(state.records.map(r=>value(r,'cycle')),cycle,'Todos los ciclos disponibles')}</select><select id="op-advisor" aria-label="Asesor asignado">${options(state.records.map(r=>r.owner),advisor,'Todos los asesores')}</select><select id="op-stage" aria-label="Etapa comercial">${options(state.records.map(r=>r.stage),stage,'Todas las etapas')}</select><select id="op-status" aria-label="Estado de Oracle">${options(state.records.map(r=>r.status),oracleStatus,'Todos los estados de Oracle')}</select>${view==='tests'?`<select id="op-test-date" aria-label="Fecha de prueba">${options(state.records.map(r=>value(r,'test_date')),testDate,'Todas las fechas disponibles')}</select>`:''}<select id="op-detail-filter" aria-label="Estado de extracción"><option value="">Toda la cartera</option><option value="pending" ${detailFilter==='pending'?'selected':''}>Detalles por descargar</option><option value="failed" ${detailFilter==='failed'?'selected':''}>Lecturas con incidencias</option><option value="contact-unavailable" ${detailFilter==='contact-unavailable'?'selected':''}>Contacto sin acceso en Oracle</option></select><button id="op-clear">Limpiar</button></div>`;
   }
   const columns = {
-    base:[['name','Nombre de oportunidad','general'],['owner','Asesor','advisor'],['stage','Etapa comercial','general'],['status','Estado de Oracle','general'],['probability','Probabilidad','general'],['close_date','Cierre comercial','general'],['cycle','Ciclo','general'],['admission_status','Proceso de admisión','general'],['test_date','Fecha de prueba','tests'],['interview','Entrevista','interviews'],['activities','Citas y tareas','activities']],
+    base:[['name','Nombre de oportunidad','general'],['owner','Asesor','advisor'],['segment','Segmento','general'],['stage','Etapa comercial','general'],['status','Estado de Oracle','general'],['probability','Probabilidad','general'],['close_date','Cierre comercial','general'],['cycle','Ciclo','general'],['admission_status','Proceso de admisión','general'],['test_date','Fecha de prueba','tests'],['interview','Entrevista','interviews'],['activities','Citas y tareas','activities']],
     tests:[['cycle','Ciclo','general'],['test_call','Convocatoria','tests'],['test_date','Fecha PA','tests'],['test_type','Prueba de admisión','tests'],['test_route','Tipo de prueba','tests'],['agreement','Convenio PA','tests'],['resolution','Resolución','tests']],
     interviews:[['owner','Asesor','advisor'],['cycle','Ciclo','general'],['interview','Indicador de entrevista','interviews'],['activities','Citas y tareas vinculadas','activities'],['resolution','Resolución','tests']],
     payments:[['owner','Asesor','advisor'],['stage','Etapa','general'],['amount','Importe de oportunidad','payments'],['reservation_close','Reserva de cupo','payments'],['tuition_delay_reason','Retraso de matrícula','payments']],
@@ -151,10 +159,10 @@ window.UnisOracleLive = (() => {
     const size=root.querySelector('#op-page-size');if(size)size.onchange=e=>{pageSize=e.target.value==='all'?'all':Number(e.target.value);page=1;draw();};
     const search=root.querySelector('#op-search');
     if(search)search.oninput=event=>{query=event.target.value;const pos=event.target.selectionStart;page=1;draw();const target=root.querySelector('#op-search');target.focus();target.setSelectionRange(pos,pos);};
-    for(const [id,set] of [['op-detail-filter',v=>detailFilter=v],['op-faculty',v=>faculty=v],['op-cycle',v=>cycle=v],['op-advisor',v=>advisor=v],['op-stage',v=>stage=v],['op-status',v=>oracleStatus=v],['op-test-date',v=>testDate=v]]){
+    for(const [id,set] of [['op-detail-filter',v=>detailFilter=v],['op-faculty',v=>faculty=v],['op-cycle',v=>cycle=v],['op-advisor',v=>advisor=v],['op-stage',v=>stage=v],['op-status',v=>oracleStatus=v],['op-segment',v=>segment=v],['op-test-date',v=>testDate=v]]){
       const element=root.querySelector('#'+id);if(element)element.onchange=e=>{set(e.target.value);page=1;draw();};
     }
-    const clear=root.querySelector('#op-clear');if(clear)clear.onclick=()=>{query=cycle=advisor=stage=oracleStatus=faculty=testDate=detailFilter='';page=1;draw();};
+    const clear=root.querySelector('#op-clear');if(clear)clear.onclick=()=>{query=cycle=advisor=stage=oracleStatus=segment=faculty=testDate=detailFilter='';page=1;draw();};
     const prev=root.querySelector('#op-prev'),next=root.querySelector('#op-next');if(prev)prev.onclick=()=>{page--;draw();};if(next)next.onclick=()=>{page++;draw();};
     root.querySelectorAll('[data-detail]').forEach(button=>button.onclick=()=>openDetail(button.dataset.detail,button.dataset.module));
     root.querySelectorAll('[data-inline]').forEach(button=>button.onclick=()=>{inline={number:button.dataset.inline,key:button.dataset.field};error='';draw();});
@@ -278,6 +286,6 @@ window.UnisOracleLive = (() => {
       if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.extraction,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open)drawDetail();}}
     catch { /* Retain the last successful view during brief local outages. */ }
   },3000);
-  function reset(){state=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=oracleStatus=faculty=testDate=detailFilter='';page=1;inline=null;selected=null;view='base';cohort='';activities=[];changes=[];error='';}
+  function reset(){refreshFlight=null;state=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=oracleStatus=segment=faculty=testDate=detailFilter='';page=1;inline=null;selected=null;view='base';cohort='';activities=[];changes=[];error='';}
   return {render,reset};
 })();

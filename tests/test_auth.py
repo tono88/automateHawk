@@ -44,6 +44,20 @@ class SessionTests(unittest.TestCase):
         s.update(batch_job='synthetic-job',batch_deadline=5000)
         a.logout('hub_session=synthetic-token')
         self.assertFalse(a.sessions);a.rpc.assert_called_once_with('/logout',{'id':'fake'})
+    def test_inventory_retries_only_transient_read_failures(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        a=self.auth();session=a.sessions['synthetic-token'];session['store'].repository=SimpleNamespace()
+        invoke=lambda fetch,ingest,progress:fetch({})
+        a.session_rpc=Mock(side_effect=[AuthError('unavailable'),{'empty_verified':True}])
+        with patch('app.oracle_scope.inventory',side_effect=invoke),patch('app.auth.sleep'):
+            self.assertEqual(a.refresh_listing(session),{'records':[],'empty_verified':True})
+        self.assertEqual(a.session_rpc.call_count,2)
+        for code,calls in [('unavailable',3),('session',1)]:
+            a.session_rpc=Mock(side_effect=AuthError(code))
+            with patch('app.oracle_scope.inventory',side_effect=invoke),patch('app.auth.sleep'),self.assertRaises(AuthError):a.refresh_listing(session)
+            self.assertEqual(a.session_rpc.call_count,calls)
+
     def test_logout_is_server_side_revocation(self):
         a=self.auth();a.logout('hub_session=synthetic-token');self.assertFalse(a.sessions);a.rpc.assert_called_once_with('/logout',{'id':'fake'})
     def test_login_failure_clears_credentials_and_enforces_attempt_limit(self):
@@ -98,8 +112,18 @@ class AuthHttpTests(unittest.TestCase):
         self.old=server.AUTH;server.AUTH=Mock();server.AUTH.resolve.side_effect=AuthError()
     def tearDown(self):server.AUTH=self.old
     def test_all_data_routes_require_session(self):
-        for path in ('/api/snapshot','/api/oracle/snapshot','/api/oracle/status','/api/oracle/activities','/api/oracle/changes','/api/oracle/batch','/api/oracle/catalog'):
+        for path in ('/api/snapshot','/api/oracle/snapshot','/api/oracle/workspace','/api/oracle/status','/api/oracle/activities','/api/oracle/changes','/api/oracle/batch','/api/oracle/catalog'):
             with self.subTest(path=path):self.assertEqual(self.request(path)[0],401)
+    def test_workspace_authenticates_and_reloads_the_scoped_model_once(self):
+        store=OracleReadStore();store.ingest({'records':[{'opportunity_number':'SYNTHETIC-001'}],'scope':'Synthetic','partial':True})
+        store._reload=Mock();server.AUTH.resolve.side_effect=None
+        server.AUTH.resolve.return_value={'store':store,'principal':'synthetic-user'}
+        code,body,_=self.request('/api/oracle/workspace')
+        data=json.loads(body);self.assertEqual(code,200)
+        self.assertEqual(data['snapshot']['records'][0]['opportunity_number'],'SYNTHETIC-001')
+        self.assertEqual(data['changes'],[]);self.assertEqual(data['activities'],[])
+        self.assertIn('appointments',data['schemas']);store._reload.assert_called_once()
+
     def test_no_origin_or_cross_origin_cannot_login(self):
         self.assertEqual(self.request('/api/auth/login','POST',{})[0],403)
         self.assertEqual(self.request('/api/auth/login','POST',{}, {'Origin':'http://example.invalid'})[0],403)
@@ -182,6 +206,23 @@ class BatchReadTests(unittest.TestCase):
         self.assertEqual(store.job['state'],'completed')
         self.assertEqual(len({n for n,_ in observed}),2);self.assertEqual({lane for _,lane in observed},{0,1})
         self.assertEqual(store.job['successful'],2);self.assertFalse(store.batch_inflight)
+    def test_four_read_lanes_use_distinct_reservations_and_finish_all_records(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier,Lock
+        from time import monotonic,sleep
+        a,s,store,tasks=self.setup_batch(4);a.read_lanes=4;barrier=Barrier(4);lock=Lock();observed=[]
+        def rpc(session,body):
+            with lock:observed.append((body['number'],body['lane']))
+            barrier.wait(timeout=3)
+            return {'opportunity_number':body['number'],'schema_version':2,'fields':{'cycle':'2271'}}
+        a.session_rpc=Mock(side_effect=rpc)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            a.pool=pool;a.execute(s);deadline=monotonic()+5
+            while store.job['state']=='running' and monotonic()<deadline:sleep(.01)
+        self.assertEqual(store.job['state'],'completed');self.assertEqual(store.job['successful'],4)
+        self.assertEqual(len({n for n,_ in observed}),4);self.assertEqual({lane for _,lane in observed},{0,1,2,3})
+        self.assertFalse(store.batch_inflight)
+
     def test_lane_with_no_unreserved_work_does_not_spin(self):
         a,s,store,tasks=self.setup_batch(1);a.session_rpc=Mock()
         a.execute(s);store.batch_inflight.add('SYNTHETIC-0')

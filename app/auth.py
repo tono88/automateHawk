@@ -1,5 +1,5 @@
 """Screen-authenticated, ephemeral sessions. No Oracle passwords or cookies on disk."""
-import hashlib,json
+import hashlib,json,os
 from datetime import datetime,timezone
 from pathlib import Path
 from secrets import token_urlsafe
@@ -20,7 +20,9 @@ class ScreenAuth:
         if worker_url not in ('http://oracle-worker:8767','http://127.0.0.1:8767'):raise ValueError('Invalid worker')
         self.dsn=dsn;self.url=worker_url;self.secret=Path(secret_file).read_text().strip();self.role=role
         self.sessions={};self.attempts={};self.lock=RLock();self.clock=clock
-        self.pool=ThreadPoolExecutor(max_workers=2);self.record_locks={}
+        self.read_lanes=int(os.environ.get('HUB_READ_LANES','2'))
+        if self.read_lanes not in range(1,5):raise ValueError('Read lanes must be between 1 and 4')
+        self.pool=ThreadPoolExecutor(max_workers=max(2,self.read_lanes));self.record_locks={}
     def rpc(self,path,body):
         request=Request(self.url+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Worker-Secret':self.secret},method='POST')
         try:
@@ -50,7 +52,7 @@ class ScreenAuth:
             repository=ScopedRepository(self.dsn,principal)
             store=OracleReadStore(repository,role=self.role);store.actor=principal;store.write_enabled=True;store.heartbeat()
             token=token_urlsafe(48);now=self.clock()
-            session={'worker_id':verified['id'],'principal':principal,'display':verified['display'],'store':store,'created':now,'seen':now,'checked':now,'demo':None,'task_lock':Lock(),'lane_locks':[Lock(),Lock()],'grant_lock':Lock()}
+            session={'worker_id':verified['id'],'principal':principal,'display':verified['display'],'store':store,'created':now,'seen':now,'checked':now,'demo':None,'task_lock':Lock(),'lane_locks':[Lock() for _ in range(self.read_lanes)],'grant_lock':Lock()}
             with self.lock:self.sessions[token]=session
             if not store.records:store.request('opportunities');self.execute(session)
             return token,session
@@ -168,7 +170,7 @@ class ScreenAuth:
                         # Renew the list grant when a long batch crosses its expiry.
                         if store.repository and hasattr(store.repository,'grants'):
                             with session['grant_lock']:
-                                grant=store.repository.grants().get(number)
+                                grant=store.repository.grant(number) if hasattr(store.repository,'grant') else store.repository.grants().get(number)
                                 if not grant or (grant['read_until']-datetime.now(timezone.utc)).total_seconds()<180:
                                     self.refresh_listing(session)
                                     if number not in store.repository.grants():
@@ -225,7 +227,8 @@ class ScreenAuth:
                 if number and job['kind']=='details_batch' and store.job.get('id')==job['id'] and store.job.get('state')=='running' and not store.job.get('stop_requested') and store.batch(internal=True)['pending']:
                     self.pool.submit(run,lane)
         self.pool.submit(run)
-        if job['kind']=='details_batch':self.pool.submit(run,1)
+        if job['kind']=='details_batch':
+            for lane in range(1,getattr(self,'read_lanes',2)):self.pool.submit(run,lane)
 
     def refresh_listing(self,session):
         from .oracle_scope import inventory
@@ -233,7 +236,12 @@ class ScreenAuth:
         store=session['store']
         store.repository.snapshot_started=datetime.now(timezone.utc)
         def fetch(query):
-            result=self.session_rpc(session,{'kind':'opportunities','query':query,'reuse':True})
+            for attempt in range(1,4):
+                try:
+                    result=self.session_rpc(session,{'kind':'opportunities','query':query,'reuse':True});break
+                except AuthError as error:
+                    if attempt==3 or error.code not in ('unavailable','layout','busy'):raise
+                    sleep(attempt)
             if 'export_html' in result:return parse_export(result['export_html'],result['scope'])
             if result.get('empty_verified') is True:return {'records':[],'empty_verified':True}
             raise AuthError('unavailable')

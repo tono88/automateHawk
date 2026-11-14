@@ -21,7 +21,7 @@ DETAIL_FIELDS={
  'name':('Nombre','general'), 'owner':('Responsable','advisor'),
  'owner_email':('Correo electrónico del asesor','advisor'),
  'stage':('Etapa de ventas','general'), 'status':('Estado de Oracle','general'), 'probability':('Probabilidad de ganar (%)','general'),
- 'close_date':('Fecha de cierre','general')
+ 'segment':('Segmento','general'), 'close_date':('Fecha de cierre','general')
 }
 
 DETAIL_FIELDS.update({'campus_id': ('ID Campus', 'contact'),

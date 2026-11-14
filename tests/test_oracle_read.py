@@ -125,6 +125,15 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(self.s.batch()['pending'],[])
         self.assertEqual(self.s.batch(internal=True)['pending'],['SYNTHETIC-001'])
 
+    def test_paused_job_throughput_does_not_decay_while_no_reads_are_running(self):
+        from unittest.mock import patch
+        self.s.ingest(payload());self.s.request('details_batch');self.s.claim()
+        self.s.job.update(state='paused',started_at='2026-01-01T00:00:00+00:00',finished_at='2026-01-01T00:01:00+00:00')
+        self.s.batch_done={'SYNTHETIC-001'};self.s.job_clock=1;self.s.read_seconds=[30]
+        for clock in (61,3601):
+            with patch('app.oracle_read.monotonic',return_value=clock):
+                self.assertEqual(self.s.performance()['records_per_minute'],1)
+
     def test_reader_cannot_propose_or_change_schedule(self):
         with self.assertRaises(PermissionError):self.s.propose({})
         with self.assertRaises(PermissionError):self.s.save_settings({'enabled':True,'interval_minutes':15})

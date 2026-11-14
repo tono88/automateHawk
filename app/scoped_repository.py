@@ -13,10 +13,14 @@ class ScopedRepository(PostgresRepository):
             rows=c.execute('SELECT * FROM user_permissions WHERE principal=%s AND read_until>now()',(self.principal,)).fetchall()
         return {r['opportunity_number']:r for r in rows}
     def require(self,number,field=None):
-        grant=self.grants().get(number)
+        grant=self.grant(number)
         if not grant:raise PermissionError()
         if field and (not grant['detail_until'] or grant['detail_until']<datetime.now(timezone.utc) or not grant['capabilities'].get(field)):raise PermissionError()
         return grant
+    def grant(self,number):
+        with self.connect() as c:
+            return c.execute('SELECT * FROM user_permissions WHERE principal=%s AND opportunity_number=%s AND read_until>now()',
+                             (self.principal,number)).fetchone()
     def save_snapshot(self,rows,scope):
         # Preserve globally known fields not exposed by this user's list.
         original={r['opportunity_number']:r for r in super().load()['records']};merged=[]
@@ -46,7 +50,9 @@ class ScopedRepository(PostgresRepository):
         return result
     def save_detail(self,number,detail):
         self.require(number)
-        old=super().load()['details'].get(number,{})
+        with self.connect() as c:
+            row=c.execute('SELECT payload FROM record_details WHERE opportunity_number=%s',(number,)).fetchone()
+        old=row['payload'] if row else {}
         merged=dict(detail,fields=dict(old.get('fields',{}),**detail['fields']))
         super().save_detail(number,merged)
         with self.connect() as c:
@@ -54,16 +60,20 @@ class ScopedRepository(PostgresRepository):
               detail_until=now()+interval '30 minutes',checked_at=now() WHERE principal=%s AND opportunity_number=%s""",(Jsonb(list(detail['fields'])),Jsonb(detail['capabilities']),detail['activities']['queried'],self.principal,number))
     def changes(self,number=None):
         if number:self.require(number)
+        rows=super().changes(number)
+        if not rows:return []
         grants=self.grants()
-        return [r for r in super().changes(number) if r['opportunity_number'] in grants and r['field'] in (grants[r['opportunity_number']]['basic_fields']+grants[r['opportunity_number']]['detail_fields']) and r['actor']==self.principal]
+        return [r for r in rows if r['opportunity_number'] in grants and r['field'] in (grants[r['opportunity_number']]['basic_fields']+grants[r['opportunity_number']]['detail_fields']) and r['actor']==self.principal]
     def propose(self,number,field,*args):
         self.require(number,field);return super().propose(number,field,*args)
     def cancel(self,identifier,actor):
         if not any(r['id']==identifier for r in self.changes()):raise PermissionError()
         return super().cancel(identifier,actor)
     def local_activities(self):
+        items=super().local_activities()
+        if not items:return []
         grants=self.grants()
-        rows=[r for r in super().local_activities() if r['opportunity_number'] in grants and (r['actor']==self.principal or (grants[r['opportunity_number']]['activities_visible'] and grants[r['opportunity_number']]['detail_until'] and grants[r['opportunity_number']]['detail_until']>datetime.now(timezone.utc)))]
+        rows=[r for r in items if r['opportunity_number'] in grants and (r['actor']==self.principal or (grants[r['opportunity_number']]['activities_visible'] and grants[r['opportunity_number']]['detail_until'] and grants[r['opportunity_number']]['detail_until']>datetime.now(timezone.utc)))]
         for r in rows:r['can_edit']=r.pop('actor')==self.principal
         return rows
     def save_local_activity(self,item,actor):
@@ -73,13 +83,17 @@ class ScopedRepository(PostgresRepository):
         if existing and existing['actor']!=self.principal:raise PermissionError()
         return super().save_local_activity(item,actor)
     def summary(self):
-        return dict(engine='postgresql',persistent=True,records=len(self.grants()),historical_versions=None,sync_runs=None,global_mirror=True)
+        with self.connect() as c:
+            count=c.execute('SELECT count(*) AS n FROM user_permissions WHERE principal=%s AND read_until>now()', (self.principal,)).fetchone()['n']
+        return dict(engine='postgresql',persistent=True,records=count,historical_versions=None,sync_runs=None,global_mirror=True)
 
     def read_progress(self):
-        allowed=self.grants()
         with self.connect() as c:
-            rows=c.execute('SELECT opportunity_number,state,attempts,error_code,schema_version FROM detail_read_progress WHERE principal=%s',(self.principal,)).fetchall()
-        return {r['opportunity_number']:{k:v for k,v in r.items() if k!='opportunity_number'} for r in rows if r['opportunity_number'] in allowed}
+            rows=c.execute('''SELECT r.opportunity_number,r.state,r.attempts,r.error_code,r.schema_version
+              FROM detail_read_progress r JOIN user_permissions p
+              ON p.principal=r.principal AND p.opportunity_number=r.opportunity_number
+              WHERE r.principal=%s AND p.read_until>now()''',(self.principal,)).fetchall()
+        return {r['opportunity_number']:{k:v for k,v in r.items() if k!='opportunity_number'} for r in rows}
     def save_read_progress(self,number,state,attempts=0,error_code=''):
         self.require(number)
         if state not in ('reading','completed','partial','failed') or error_code not in ('','timeout','layout','permission','unavailable','contact-unavailable'):raise ValueError('Invalid read outcome')

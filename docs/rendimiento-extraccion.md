@@ -48,3 +48,23 @@ La herramienta de operador `connector/repair-test-call.mjs` requiere autorizaci�
 Se localizaron informes existentes de UNIS Admisiones 2026 en Análisis, con información de contactos, pruebas y referencias de pago. Algunos trabajan a nivel de contacto y no muestran el número oficial de oportunidad. Su incorporación requiere confirmar la granularidad y los identificadores de enlace; no se fusionan datos financieros o de admisión por coincidencias de nombres.
 
 El informe existente de Matriculados expone ID Campus, ciclo, programa, fecha de matriculación, resultados y monto de matrícula. No muestra número de oportunidad. Antes de cruzarlo con la cartera se debe verificar una relación única con el contacto, ciclo y programa; su título de 2026 no demuestra que cada fecha de matrícula pertenezca a ese año. El informe se inspeccionó sin alterar su definición ni fusionar valores por nombres.
+
+La actualización de la cartera, cola y actividades se reúne en una sola consulta autenticada por ciclo de pantalla, en lugar de tres recargas completas. El cliente comparte solicitudes simultáneas y conserva la comprobación de permisos en cada consulta. El ritmo de un lote pausado o terminado se calcula hasta su cierre y deja de disminuir durante la inactividad.
+
+Las comprobaciones individuales de permisos y el guardado de una ficha consultan exclusivamente su registro. Los conteos y el avance se filtran en SQL por usuario y vigencia. La interfaz permite filtrar por Segmento y revisar por separado los contactos que Oracle declara sin acceso.
+
+## Comparación con las mismas fichas y límite configurable
+
+Se repitieron veinticuatro fichas ya verificadas de los tres estados del año, sin guardar cambios en Oracle ni persistir los valores del ensayo. Se validaron número oficial y versión de lectura. La medición incluye autenticación, arranque y reintentos de solo lectura.
+
+| Sesiones aisladas | Ventanas por sesión | Fichas completas | Segundos | Fichas/min | Segundos/lectura | Reintentos | Fallos finales |
+|---|---|---|---|---|---|---|---|
+| 1 | 2 | 24 | 179.72 | 8.01 | 14.09 | 1 | 0 |
+| 1 | 4 | 24 | 110.32 | 13.05 | 16.41 | 0 | 0 |
+| 2 | 2 | 24 | 117.08 | 12.30 | 17.33 | 1 | 0 |
+
+Cuatro ventanas con una sesión aumentaron el ritmo observado un 63% respecto a dos ventanas. Aumentó el tiempo por lectura y el consumo de recursos. El orden fue fijo y las cachés de Oracle pudieron favorecer los ensayos posteriores; no constituye una garantía para toda la cartera. No se adopta la variante de dos sesiones por usuario.
+
+`HUB_READ_LANES` y `HUB_SCREEN_OPERATIONS` admiten de 1 a 4. La configuración compartida conserva 2; el piloto local usa 4 después de la medición. El trabajador comparte un navegador con contextos aislados por usuario. Los cuatro lectores reservan números distintos, verifican identidad y conservan pausa y reanudación. El inventario mantiene una página de caché separada para evitar colisiones durante renovaciones de permisos. Los reintentos se limitan a consultas; no se aplican a guardados inciertos.
+
+`connector/benchmark-lanes.mjs` es una herramienta interna de operador: recibe credenciales transitorias y números autorizados por entrada estándar, inicia y cierra sus propias sesiones y emite únicamente conteos y tiempos. Requiere acceso al trabajador interno; no añade una ruta pública ni utiliza APIs de Oracle. Las muestras reales permanecen fuera del repositorio.

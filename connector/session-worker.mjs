@@ -17,7 +17,9 @@ const browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usag
 const loginOrigin=new URL(process.env.ORACLE_LOGIN_ORIGIN).origin;
 if(!loginOrigin.startsWith('https://')||!loginOrigin.endsWith('.identity.oraclecloud.com'))throw Error('configuration');
 const sessions=new Map();let active=0,pendingLogins=0;const waiters=[];
-const LIMIT=2,MAX_SESSIONS=8,IDLE=15*60*1000,MAX_AGE=8*60*60*1000;
+const LIMIT=Number(process.env.HUB_SCREEN_OPERATIONS||2);
+if(!Number.isInteger(LIMIT)||LIMIT<1||LIMIT>4)throw Error('configuration');
+const MAX_SESSIONS=8,IDLE=15*60*1000,MAX_AGE=8*60*60*1000;
 async function slot(fn){if(active>=LIMIT)await new Promise(r=>waiters.push(r));else active++;try{return await fn();}finally{const next=waiters.shift();if(next)next();else active--;}}
 async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){for(const timer of s.readTimers||[])clearTimeout(timer);await s.context.close().catch(()=>{});}}
 function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
@@ -51,7 +53,8 @@ async function login(body){
 }
 async function run(body){
   const s=sessions.get(body.id);if(!alive(s))throw Error('session');
-  const lane=body.lane??0;if(![0,1].includes(lane))throw Error('layout');
+  const lane=body.lane??0;if(!Number.isInteger(lane)||lane<0||lane>3)throw Error('layout');
+  const cacheLane=body.kind==='opportunities'?4:lane;
   const reading=body.kind==='detail'||body.kind==='opportunities';
   if(s.busy||s.lanes.has(lane)&&body.kind==='detail')throw Error('busy');
   if(!reading&&s.reading)throw Error('write-not-started');
@@ -59,8 +62,8 @@ async function run(body){
   if(body.kind==='detail')s.lanes.add(lane);s.seen=Date.now();let page,a;
   const reusable=['detail','opportunities'].includes(body.kind)&&body.reuse===true;let reuseQuery=false;
   try{
-    if(reusable&&s.readKinds[lane]===body.kind&&s.readPages[lane]&&!s.readPages[lane].isClosed()){page=s.readPages[lane];s.readPages[lane]=null;clearTimeout(s.readTimers[lane]);reuseQuery=true;}
-    else{if(reusable&&s.readPages[lane]){await s.readPages[lane].close().catch(()=>{});s.readPages[lane]=null;clearTimeout(s.readTimers[lane]);}page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});}
+    if(reusable&&s.readKinds[cacheLane]===body.kind&&s.readPages[cacheLane]&&!s.readPages[cacheLane].isClosed()){page=s.readPages[cacheLane];s.readPages[cacheLane]=null;clearTimeout(s.readTimers[cacheLane]);reuseQuery=true;}
+    else{if(reusable&&s.readPages[cacheLane]){await s.readPages[cacheLane].close().catch(()=>{});s.readPages[cacheLane]=null;clearTimeout(s.readTimers[cacheLane]);}page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});}
     await page.getByRole('link',{name:'Página Inicial',exact:true}).waitFor({state:'visible',timeout:30000}).catch(()=>{throw Error('session');});
     if(!await authenticated(page))throw Error('session');
     a=adapter(page);a.applyScope=()=>applyOpportunityScope(a,body.kind==='opportunities'?validateQuery(body.query):validateQuery());let result;
@@ -78,9 +81,9 @@ async function run(body){
       } finally {await download.delete().catch(()=>{});}
     }
     s.seen=Date.now();
-    if(reusable&&!a.discardPage){const held=page;s.readPages[lane]=held;s.readKinds[lane]=body.kind;page=null;clearTimeout(s.readTimers[lane]);s.readTimers[lane]=setTimeout(()=>{if(s.readPages[lane]===held){s.readPages[lane]=null;held.close().catch(()=>{});}},60000);s.readTimers[lane].unref();}
+    if(reusable&&!a.discardPage){const held=page;s.readPages[cacheLane]=held;s.readKinds[cacheLane]=body.kind;page=null;clearTimeout(s.readTimers[cacheLane]);s.readTimers[cacheLane]=setTimeout(()=>{if(s.readPages[cacheLane]===held){s.readPages[cacheLane]=null;held.close().catch(()=>{});}},60000);s.readTimers[cacheLane].unref();}
     return result;
-  }catch(error){if(a?.scopeDiagnostic)console.warn('Scope verification:',JSON.stringify(a.scopeDiagnostic));console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session','scope'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{if(reading)s.reading--;else s.busy=false;if(body.kind==='detail')s.lanes.delete(lane);if(page)await page.close().catch(()=>{});}
+  }catch(error){if(error.message==='timeout'&&a?.settleFilters?.pending)console.warn('Pending UI updates:',JSON.stringify(a.settleFilters.pending()));if(a?.scopeDiagnostic)console.warn('Scope verification:',JSON.stringify(a.scopeDiagnostic));console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session','scope'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{if(reading)s.reading--;else s.busy=false;if(body.kind==='detail')s.lanes.delete(lane);if(page)await page.close().catch(()=>{});}
 }
 const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
 const http=createServer(async(req,res)=>{

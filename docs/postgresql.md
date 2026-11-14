@@ -31,7 +31,7 @@ Al volver a arrancar, el servidor recupera la copia desde PostgreSQL. No elimina
 .venv/Scripts/python -m scripts.backup_local --verify
 ```
 
-El respaldo `pg_dump` se escribe en la carpeta privada `automateHawk/backups`, fuera de Git, y genera una suma SHA-256. La verificación restaura en una base temporal exclusiva, compara conteos y huellas de contenido de las tablas del esquema `hub`, y elimina únicamente esa base de prueba. No modifica la base operativa durante la prueba.
+El respaldo `pg_dump` se escribe en la carpeta privada `automateHawk/backups`, fuera de Git, y genera una suma SHA-256. La verificación restaura en una base temporal exclusiva, compara conteos y huellas de contenido de las tablas del esquema `hub`, y elimina únicamente esa base de prueba. El volcado y la comparación usan la misma instantánea de PostgreSQL, de modo que una extracción concurrente no invalida la prueba. No modifica la base operativa durante la prueba.
 
 El volumen y el respaldo del mismo equipo protegen frente a algunos fallos, pero no constituyen alta disponibilidad ni protección frente a pérdida del dispositivo. La copia externa cifrada, retención, automatización de respaldos, RPO/RTO y restauraciones periódicas forman parte de la etapa institucional. No publicar estos respaldos ni incorporarlos al repositorio.
 

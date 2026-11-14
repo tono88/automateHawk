@@ -117,6 +117,7 @@ class Handler(BaseHTTPRequestHandler):
                     job=self.oracle.request(body.get('kind','opportunities'),body.get('opportunity_number'))
                     if AUTH:AUTH.execute(self.session)
                     return self.respond(202,job)
+                if route=='/api/oracle/jobs/pause':return self.respond(202,self.oracle.request_pause())
                 if route=='/api/oracle/claim': return self.respond(200,{'job':self.oracle.claim()})
                 if route=='/api/oracle/fail':
                     self.oracle.authorize(self.headers.get('X-Sync-Ticket',''));self.oracle.fail(body.get('code'));return self.respond(200,self.oracle.status())

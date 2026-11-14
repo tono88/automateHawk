@@ -16,11 +16,11 @@ if(!loginOrigin.startsWith('https://')||!loginOrigin.endsWith('.identity.oraclec
 const sessions=new Map();let active=0,pendingLogins=0;const waiters=[];
 const LIMIT=2,MAX_SESSIONS=8,IDLE=15*60*1000,MAX_AGE=8*60*60*1000;
 async function slot(fn){if(active>=LIMIT)await new Promise(r=>waiters.push(r));else active++;try{return await fn();}finally{const next=waiters.shift();if(next)next();else active--;}}
-async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){clearTimeout(s.readTimer);await s.context.close().catch(()=>{});}}
+async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){for(const timer of s.readTimers||[])clearTimeout(timer);await s.context.close().catch(()=>{});}}
 function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
 function trusted(page){return new URL(page.url()).origin===target.origin;}
 async function authenticated(page){return trusted(page)&&await page.getByRole('link',{name:'Página Inicial',exact:true}).count()>0;}
-function adapter(page){return {ui:page,observe:async()=>{await page.locator('body').waitFor({state:'visible'});await page.waitForTimeout(300);},clickAdvanced:async()=>ensureAdvancedSearch(page,()=>page.waitForTimeout(300)),scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}
+function adapter(page){return {ui:page,observe:async()=>{await page.locator('body').waitFor({state:'visible'});},clickAdvanced:async()=>ensureAdvancedSearch(page,()=>page.waitForTimeout(300)),scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}
 async function login(body){
   if(sessions.size+pendingLogins>=MAX_SESSIONS)throw Error('capacity');
   pendingLogins++;let context,page;
@@ -42,16 +42,21 @@ async function login(body){
     if(!await authenticated(page))throw Error('session');
     const identity=await page.locator('h1').first().innerText().catch(()=>'Cuenta de Oracle');
     const id=randomBytes(32).toString('base64url'),now=Date.now();
-    sessions.set(id,{context,seen:now,created:now,busy:false});await page.close();
+    sessions.set(id,{context,seen:now,created:now,busy:false,readPages:[],readTimers:[],lanes:new Set(),reading:0});await page.close();
     return {id,principal:body.username.trim().toLocaleLowerCase('en'),display:identity.slice(0,180)};
   }catch(error){if(context)await context.close();throw error;}finally{pendingLogins--;body.password='';}
 }
 async function run(body){
   const s=sessions.get(body.id);if(!alive(s))throw Error('session');
-  if(s.busy)throw Error('busy');s.busy=true;s.seen=Date.now();let page,a;
+  const lane=body.lane??0;if(![0,1].includes(lane))throw Error('layout');
+  const reading=body.kind==='detail'||body.kind==='opportunities';
+  if(s.busy||s.lanes.has(lane)&&body.kind==='detail')throw Error('busy');
+  if(!reading&&s.reading)throw Error('write-not-started');
+  if(reading)s.reading++;else s.busy=true;
+  if(body.kind==='detail')s.lanes.add(lane);s.seen=Date.now();let page,a;
   const reusable=body.kind==='detail'&&body.reuse===true;let reuseQuery=false;
   try{
-    if(reusable&&s.readPage&&!s.readPage.isClosed()){page=s.readPage;s.readPage=null;clearTimeout(s.readTimer);reuseQuery=true;}
+    if(reusable&&s.readPages[lane]&&!s.readPages[lane].isClosed()){page=s.readPages[lane];s.readPages[lane]=null;clearTimeout(s.readTimers[lane]);reuseQuery=true;}
     else{page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});}
     await page.getByRole('link',{name:'Página Inicial',exact:true}).waitFor({state:'visible',timeout:30000}).catch(()=>{throw Error('session');});
     if(!await authenticated(page))throw Error('session');
@@ -71,9 +76,9 @@ async function run(body){
       } finally {await download.delete().catch(()=>{});}
     }
     s.seen=Date.now();
-    if(reusable&&!a.discardPage){const held=page;s.readPage=held;page=null;clearTimeout(s.readTimer);s.readTimer=setTimeout(()=>{if(s.readPage===held){s.readPage=null;held.close().catch(()=>{});}},60000);s.readTimer.unref();}
+    if(reusable&&!a.discardPage){const held=page;s.readPages[lane]=held;page=null;clearTimeout(s.readTimers[lane]);s.readTimers[lane]=setTimeout(()=>{if(s.readPages[lane]===held){s.readPages[lane]=null;held.close().catch(()=>{});}},60000);s.readTimers[lane].unref();}
     return result;
-  }catch(error){console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{s.busy=false;if(page)await page.close().catch(()=>{});}
+  }catch(error){console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{if(reading)s.reading--;else s.busy=false;if(body.kind==='detail')s.lanes.delete(lane);if(page)await page.close().catch(()=>{});}
 }
 const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
 const http=createServer(async(req,res)=>{
@@ -94,5 +99,5 @@ const http=createServer(async(req,res)=>{
 });
 http.requestTimeout=15000;
 http.listen(8767,'0.0.0.0');
-setInterval(()=>{for(const [id,s]of sessions)if(!s.busy&&!alive(s))remove(id);},30000).unref();
+setInterval(()=>{for(const [id,s]of sessions)if(!s.busy&&!s.reading&&!alive(s))remove(id);},30000).unref();
 process.on('SIGTERM',async()=>{http.close();await browser.close();process.exit(0);});

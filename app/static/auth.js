@@ -14,7 +14,7 @@ window.HubAuth=(()=>{
       catch(error){document.querySelector('#login-error').textContent=error.message||'No se pudo conectar con Oracle.';button.disabled=false;button.textContent='Iniciar sesión';}
     };
   }
-  function arm(){clearTimeout(idleTimer);idleTimer=setTimeout(()=>logout('La sesión terminó por inactividad.'),900000);}
+  function arm(){clearTimeout(idleTimer);idleTimer=setTimeout(()=>lock('El acceso terminó por inactividad. Una carga de lectura ya autorizada puede continuar dentro de su plazo.'),900000);}
   async function unlock(data){
     generation++;window.UnisOracleLive?.reset();ready=true;document.body.classList.remove('auth-locked');document.querySelector('#auth-logout').hidden=data.mode==='local';
     document.querySelector('#session-identity').textContent=data.display||'Operador local';

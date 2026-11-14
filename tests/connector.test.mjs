@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {normalizeGrid,collectOpportunities,readOpportunityGrid} from '../connector/oracle-sync.mjs';
 const grid=(number='SYNTHETIC-001')=>({headers:['Número de oportunidad','Nombre','Etapa de ventas','Correo electrónico de responsable'],rows:[[number,'Oportunidad ficticia','01 - Interesado','ficticio@example.invalid']]});
 test('collector excludes fields outside the allowlist',()=>{
-  const [row]=normalizeGrid(grid());
-  assert.equal(row.opportunity_number,'SYNTHETIC-001');assert.equal(Object.keys(row).length,3);
-  assert.ok(!JSON.stringify(row).includes('@'));
+  const input=grid();input.headers.push('Campo desconocido');input.rows[0].push('descartar');
+  const [row]=normalizeGrid(input);
+  assert.equal(row.opportunity_number,'SYNTHETIC-001');assert.equal(Object.keys(row).length,4);
+  assert.equal(row.owner_email,'ficticio@example.invalid');assert.ok(!JSON.stringify(row).includes('descartar'));
 });
 test('rejects an unrecognized layout and empty official IDs',()=>{
   assert.throws(()=>normalizeGrid({headers:[],rows:[]}));assert.equal(normalizeGrid(grid('')).length,0);

@@ -19,6 +19,7 @@ DETAIL_FIELDS={
  'reservation_close':('Cierre Reserva de cupo','payments'),
  'amount':('Importe','payments'), 'origin':('Origen','general'),
  'name':('Nombre','general'), 'owner':('Responsable','advisor'),
+ 'owner_email':('Correo electrónico del asesor','advisor'),
  'stage':('Etapa de ventas','general'), 'probability':('Probabilidad de ganar (%)','general'),
  'close_date':('Fecha de cierre','general')
 }

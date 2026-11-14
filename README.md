@@ -55,3 +55,9 @@ node --test tests/connector.test.mjs tests/oracle-write.test.mjs
 Las pruebas automáticas usan datos ficticios y una base desechable para PostgreSQL. Verifican autenticación, aislamiento por permisos sobre la base global, expiración, conflictos, resultados inciertos, relectura y persistencia. No modifican Oracle.
 
 Ver [acceso y permisos](docs/acceso-multiusuario.md), [actividades y prueba oficial](docs/actividades-y-prueba-oficial.md), [PostgreSQL y respaldos](docs/postgresql.md), [carga y límites](docs/carga-oracle.md) y [roadmap](docs/roadmap.md).
+
+### Rendimiento y continuidad de la extracción
+
+La carga ampliada usa hasta dos ventanas independientes, comprueba el número oficial de cada ficha y conserva el avance en PostgreSQL. La interfaz muestra porcentaje extraído, ritmo observado, tiempo orientativo y pausa. Un lote iniciado explícitamente puede seguir leyendo durante hasta cuatro horas, dentro del máximo de ocho horas desde el acceso, aunque el portal se bloquee tras quince minutos de inactividad. Cerrar sesión revoca también el lote. No se guardan contraseñas ni cookies. Los permisos para ver y editar siguen separados del progreso de extracción.
+
+Obscura v0.2.7 se probó en la pantalla pública de acceso y no pudo renderizar el formulario IDCS. El motor operativo sigue siendo Chromium. Las mediciones y límites están en [rendimiento de extracción](docs/rendimiento-extraccion.md). El diagnóstico local `python scripts/extraction_status.py` devuelve únicamente conteos agregados, sin datos personales.

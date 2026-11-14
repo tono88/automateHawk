@@ -1,4 +1,5 @@
 import {collectRelatedContact,readBlockingValidation,readValidationField} from './contact-reader.mjs';
+import {waitForRendered} from './ui-wait.mjs';
 /** Browser UI collector. No Oracle HTTP calls, credentials, files or raw logs. */
 export const SCOPE = 'Todos los registros que puedo ver · oportunidades abiertas · año actual';
 const COLUMNS = {
@@ -8,7 +9,7 @@ const COLUMNS = {
   'Nombre':'name','Cuenta':'account','Fecha de cierre':'close_date',
   'Éxito (%)':'probability','Etapa de ventas':'stage','Estado':'status',
   'Segmento':'segment','Contacto principal':'contact_name','Responsable':'owner',
-  'Teléfono':'phone','Fecha de creación de oportunidad':'created_at',
+  'Teléfono':'phone','Importe':'amount','Correo electrónico de responsable':'owner_email','Fecha de creación de oportunidad':'created_at',
   'Última actualización de oportunidad':'updated_at'
 };
 
@@ -34,12 +35,7 @@ export function normalizeGrid(grid) {
 }
 
 async function ready(adapter,predicate) {
-  for(let attempt=0;attempt<40;attempt++) {
-    await adapter.observe();
-    try{if(await predicate())return;}catch{/* ADF may detach the old table while replacing it. */}
-    await new Promise(resolve=>setTimeout(resolve,200));
-  }
-  throw Error('timeout');
+  return waitForRendered(adapter,predicate);
 }
 
 export async function openOpportunityQuery(adapter) {
@@ -212,8 +208,18 @@ export function readSummaryDetail() {
   return {fields,capabilities};
 }
 
+/** Official number on the visible detail form, not the advanced-search filter. */
+export function readDetailIdentity(){
+  const values=Array.from(document.querySelectorAll('label'))
+    .filter(e=>e.getClientRects().length&&e.innerText.trim()==='Número de oportunidad')
+    .map(e=>document.getElementById(e.htmlFor))
+    .filter(e=>e?.matches('input')&&e.getClientRects().length)
+    .map(e=>e.value.trim());
+  return values.length===1?values[0]:null;
+}
+
 export function readLinkedActivities() {
-  const table=Array.from(document.querySelectorAll('table')).find(t=>t.getAttribute('summary')==='Resumen');
+  const table=Array.from(document.querySelectorAll('table')).find(t=>t.getAttribute('summary')==='Resumen'&&t.getClientRects().length);
   if(!table)return {queried:false,rows:[]};
   const keys=['activity','subject','date','owner',null,'type','priority'];
   const rows=Array.from(table.rows).slice(0,100).filter(r=>r.cells.length===7).map(r=>{
@@ -225,6 +231,8 @@ export async function collectOpportunityDetail(adapter,number,{reuseQuery=false}
   if(!reuseQuery)await configureQuery(adapter);
   adapter.phase='select_record';await selectOpportunityByNumber(adapter,number);
   adapter.phase='open_detail';await openCachedDetail(adapter,number);
+  adapter.phase='verify_identity';
+  await ready(adapter,async()=>await adapter.ui.evaluate(readDetailIdentity)===number);
   adapter.phase='capture_detail';const payload=await captureOpenDetail(adapter,number);
   try {
     if(!payload.pending_modules?.includes('contact')){
@@ -316,7 +324,7 @@ export async function captureOpenDetail(adapter,number,{activities=true}={}) {
         await ui.getByRole('option',{name:'Todas las actividades',exact:true}).click();
         await ui.getByRole('button',{name:'Buscar',exact:true}).last().press('Enter');
       }
-      await adapter.observe();await adapter.observe();
+      await ready(adapter,async()=>!!(await ui.evaluate(readLinkedActivities))?.queried);
       linked=await ui.evaluate(readLinkedActivities);
     }
   }

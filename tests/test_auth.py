@@ -24,6 +24,26 @@ class SessionTests(unittest.TestCase):
         a=self.auth();a.clock=lambda:1010;a.rpc.side_effect=AuthError('session')
         with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
         self.assertFalse(a.sessions)
+    def test_background_batch_does_not_unlock_expired_interactive_session(self):
+        from threading import Lock
+        a=self.auth();s=a.sessions['synthetic-token'];s['task_lock']=Lock()
+        s['store'].ingest({'records':[{'opportunity_number':'SYNTHETIC-001'}],'scope':'Synthetic','partial':True})
+        s['store'].request('details_batch');job=s['store'].claim()
+        s.update(batch_job=job['id'],batch_deadline=3000)
+        a.clock=lambda:2000
+        with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
+        self.assertIn('synthetic-token',a.sessions)
+        a.session_rpc(s,{'kind':'detail','number':'SYNTHETIC-001'})
+        for body in ({'kind':'write'},{'kind':'detail','number':'OUTSIDE-BATCH'}):
+            with self.assertRaises(AuthError):a.session_rpc(s,body)
+        a.clock=lambda:3001
+        with self.assertRaises(AuthError):a.session_rpc(s,{'kind':'detail','number':'SYNTHETIC-001'})
+    def test_logout_revokes_authorized_batch_too(self):
+        a=self.auth();s=a.sessions['synthetic-token']
+        s['store'].job={'kind':'details_batch','state':'running','id':'synthetic-job'}
+        s.update(batch_job='synthetic-job',batch_deadline=5000)
+        a.logout('hub_session=synthetic-token')
+        self.assertFalse(a.sessions);a.rpc.assert_called_once_with('/logout',{'id':'fake'})
     def test_logout_is_server_side_revocation(self):
         a=self.auth();a.logout('hub_session=synthetic-token');self.assertFalse(a.sessions);a.rpc.assert_called_once_with('/logout',{'id':'fake'})
     def test_login_failure_clears_credentials_and_enforces_attempt_limit(self):
@@ -43,7 +63,7 @@ class WriteQueueTests(unittest.TestCase):
         a=object.__new__(ScreenAuth);a.clock=lambda:1000;a.lock=RLock();a.record_locks={}
         repo=Mock();repo.changes.return_value=[{'id':'synthetic-change','opportunity_number':'SYNTHETIC-001','field':'name','old_value':'Nombre anterior ficticio','new_value':'Nuevo ficticio','state':'uncertain' if reconcile else 'pending_validation'}]
         repo.start_write.return_value=repo.changes.return_value[0]
-        store=SimpleNamespace(repository=repo,role='editor',_reload=Mock())
+        store=SimpleNamespace(repository=repo,role='editor',job=None,_reload=Mock())
         session={'store':store,'principal':'synthetic-user','seen':999,'task_lock':Lock()};a.sessions={'test':session}
         a.pool=SimpleNamespace(submit=lambda fn:fn())
         a.session_rpc=Mock(return_value={'verified':True,'detail':{'fields':{'name':'Nuevo ficticio'}}})
@@ -99,11 +119,11 @@ class AuthHttpTests(unittest.TestCase):
 class BatchReadTests(unittest.TestCase):
     def setup_batch(self,count=3):
         from types import SimpleNamespace
-        a=object.__new__(ScreenAuth);a.lock=RLock();a.sessions={};tasks=[]
-        a.pool=SimpleNamespace(submit=lambda fn:tasks.append(fn))
+        a=object.__new__(ScreenAuth);a.lock=RLock();a.sessions={};a.clock=lambda:1000;tasks=[]
+        a.pool=SimpleNamespace(submit=lambda fn,*args:tasks.append(lambda:fn(*args)))
         store=OracleReadStore()
         store.ingest({'records':[{'opportunity_number':f'SYNTHETIC-{i}'} for i in range(count)],'scope':'Prueba sintética','partial':True})
-        store.request('details_batch');session={'store':store};a.sessions['synthetic']=session
+        store.request('details_batch');session={'store':store,'created':900,'seen':990};a.sessions['synthetic']=session
         return a,session,store,tasks
     def drain(self,tasks):
         while tasks:tasks.pop(0)()
@@ -136,3 +156,34 @@ class BatchReadTests(unittest.TestCase):
         a.execute(s);self.drain(tasks)
         self.assertEqual(a.session_rpc.call_count,1);self.assertEqual(store.job['state'],'failed')
         self.assertEqual(store.job['processed'],0);self.assertFalse(a.sessions)
+    def test_cooperative_pause_saves_in_flight_read_and_stops_next(self):
+        a,s,store,tasks=self.setup_batch()
+        def rpc(session,body):
+            store.request_pause()
+            return {'opportunity_number':body['number'],'schema_version':2,'fields':{'cycle':'2271'}}
+        a.session_rpc=Mock(side_effect=rpc)
+        a.execute(s);self.drain(tasks)
+        self.assertEqual(a.session_rpc.call_count,1)
+        self.assertEqual(store.job['state'],'paused');self.assertEqual(store.job['successful'],1)
+        self.assertEqual(store.request('details_batch')['total'],2)
+    def test_two_read_lanes_reserve_distinct_records(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier,Lock
+        from time import monotonic,sleep
+        a,s,store,tasks=self.setup_batch(2);barrier=Barrier(2);lock=Lock();observed=[]
+        def rpc(session,body):
+            with lock:observed.append((body['number'],body['lane']))
+            barrier.wait(timeout=2)
+            return {'opportunity_number':body['number'],'schema_version':2,'fields':{'cycle':'2271'}}
+        a.session_rpc=Mock(side_effect=rpc)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            a.pool=pool;a.execute(s);deadline=monotonic()+3
+            while store.job['state']=='running' and monotonic()<deadline:sleep(.01)
+        self.assertEqual(store.job['state'],'completed')
+        self.assertEqual(len({n for n,_ in observed}),2);self.assertEqual({lane for _,lane in observed},{0,1})
+        self.assertEqual(store.job['successful'],2);self.assertFalse(store.batch_inflight)
+    def test_lane_with_no_unreserved_work_does_not_spin(self):
+        a,s,store,tasks=self.setup_batch(1);a.session_rpc=Mock()
+        a.execute(s);store.batch_inflight.add('SYNTHETIC-0')
+        for _ in range(2):tasks.pop(0)()
+        self.assertEqual(tasks,[]);a.session_rpc.assert_not_called()

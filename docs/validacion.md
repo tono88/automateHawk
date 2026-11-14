@@ -40,3 +40,5 @@ La prueba de restauración del respaldo se realiza fuera del repositorio. La ext
 ## Corrección puntual de convocatoria
 
 Se verificó por pantalla un guardado expresamente autorizado de Convocatoria PA vacía a la opción existente No Aplica, después de confirmar que Fecha PA también estaba vacía. Se compararon los demás campos observados antes y después: no cambiaron. Al reabrir, el valor permaneció y fue posible consultar actividades y el contacto principal. No se introdujo una fecha ficticia. Esta verificación puntual no amplía el catálogo de escritores automáticos habilitados.
+
+La misma corrección condicionada se verificó en tres fichas adicionales que bloqueaban la lectura. En cada una se volvió a comprobar que Fecha PA y Convocatoria PA estuvieran vacías, se eligió la opción No Aplica, se compararon los demás campos antes de guardar y se reabrió para confirmar la persistencia. Estas operaciones fueron revisiones puntuales autorizadas por pantalla, no escrituras añadidas al lector de segundo plano.

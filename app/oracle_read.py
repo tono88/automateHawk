@@ -9,7 +9,7 @@ from .catalog import DETAIL_FIELDS, EDIT_FIELDS, validate_change
 
 FIELDS = ('opportunity_number','first_name','last_name','name','account','close_date',
           'probability','stage','status','segment','contact_name','owner','phone',
-          'created_at','updated_at')
+          'created_at','updated_at','amount','owner_email')
 
 class OracleReadStore:
     def __init__(self,repository=None,role='reader'):
@@ -26,7 +26,10 @@ class OracleReadStore:
         self.batch_numbers=[]
         self.batch_done=set()
         self.batch_failed=set();self.batch_partial=set()
+        self.batch_inflight=set()
         self.read_outcomes={}
+        self.read_seconds=[]
+        self.job_clock=0
         self.repository=repository
         self.role=role
         self.actor='local-editor'
@@ -68,9 +71,11 @@ class OracleReadStore:
             if kind=='detail' and not any(r['opportunity_number']==number for r in self.records):raise KeyError(number)
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             if kind=='details_batch':
+                self.read_seconds=[]
                 self.batch_numbers=[r['opportunity_number'] for r in self.records if (self.details.get(r['opportunity_number'],{}).get('schema_version',1)<2 or self.details.get(r['opportunity_number'],{}).get('pending_modules')) and self.read_outcomes.get(r['opportunity_number'],{}).get('state')!='completed']
                 self.batch_numbers.sort(key=lambda n:{'failed':1,'partial':2}.get(self.read_outcomes.get(n,{}).get('state'),0))
                 self.batch_done=set();self.batch_failed=set();self.batch_partial=set()
+                self.batch_inflight=set()
                 self.job.update(successful=0,failed=0,total=len(self.batch_numbers),processed=0)
                 if not self.batch_numbers:self.job.update(state='completed',message='La cartera cargada ya tiene sus detalles disponibles.')
             return deepcopy(self.job)
@@ -81,6 +86,7 @@ class OracleReadStore:
             if not self.job or self.job['state']!='pending': return None
             self.job.update(state='running',message='Consultando Oracle mediante su interfaz.',started_at=datetime.now(timezone.utc).isoformat())
             self.claimed_at=monotonic()
+            self.job_clock=self.claimed_at
             return deepcopy(self.job)
 
     def fail(self,message):
@@ -132,7 +138,35 @@ class OracleReadStore:
                                  worker_online=bool(self.worker_seen and monotonic()-self.worker_seen<90),
                                  role=self.role,can_propose=self.role=='editor' and bool(self.repository),settings=self.settings,
                                  retry_in_seconds=max(0,int(self.retry_after-monotonic())),
-                                 detail_count=len(self.details),extraction=self.extraction_progress(),database=self.repository.summary() if self.repository else None))
+                                 detail_count=len(self.details),extraction=self.extraction_progress(),performance=self.performance(),database=self.repository.summary() if self.repository else None))
+
+    def record_timing(self,seconds):
+        with self.lock:
+            if 0<seconds<600:self.read_seconds=(self.read_seconds+[seconds])[-100:]
+
+    def performance(self):
+        if not self.job or self.job.get('kind')!='details_batch':
+            return {'samples':0,'mean_read_seconds':None,'records_per_minute':None,'concurrent_reads':0,'estimated_remaining_seconds':None}
+        samples=self.read_seconds
+        remaining=len(self.batch(internal=True)['pending']) if self.job and self.job.get('kind')=='details_batch' else 0
+        average=sum(samples)/len(samples) if samples else None
+        elapsed=monotonic()-self.job_clock if self.job_clock else 0
+        recovered=len(self.batch_done|self.batch_partial)
+        rate=recovered/elapsed if recovered and elapsed>0 else None
+        return {'samples':len(samples),'mean_read_seconds':round(average,2) if average else None,
+                'records_per_minute':round(60*rate,2) if rate else None,
+                'concurrent_reads':len(self.batch_inflight),
+                'estimated_remaining_seconds':round(remaining/rate) if rate and self.job and self.job.get('state')=='running' else None}
+
+    def request_pause(self):
+        with self.lock:
+            if self.job and self.job.get('kind')=='details_batch' and self.job.get('state')=='running':
+                self.job.update(stop_requested=True,message='Pausa solicitada. Se terminarán las fichas en curso y se conservará el avance.')
+            return deepcopy(self.job)
+
+    def pause(self):
+        with self.lock:
+            self.job.update(state='paused',message='Carga pausada; el avance quedó guardado.',finished_at=datetime.now(timezone.utc).isoformat())
 
     def snapshot(self):
         with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details),detail_states=deepcopy(self.detail_states),read_states={r['opportunity_number']:deepcopy(self.read_outcomes.get(r['opportunity_number'],{})) for r in self.records})
@@ -183,6 +217,18 @@ class OracleReadStore:
             self._read_outcome(number,'reading',1)
             self.claimed_at=monotonic()
             self.job['message']=f"Consultando detalles: {len(self.batch_done)} recuperados, {len(self.batch_failed)} pendientes de revisión. Intento {attempt} de 3."
+
+    def reserve_detail(self):
+        with self.lock:
+            if not self.job or self.job.get('state')!='running' or self.job.get('stop_requested'):return None
+            number=next((n for n in self.batch(internal=True)['pending'] if n not in self.batch_inflight),None)
+            if number:self.batch_inflight.add(number)
+            return number
+
+    def release_detail(self,number):
+        with self.lock:
+            self.batch_inflight.discard(number)
+            if self.job.get('stop_requested') and not self.batch_inflight:self.pause()
 
     def skip_detail(self,number,code='timeout',persist=True):
         with self.lock:

@@ -2,7 +2,7 @@
 import re
 from html.parser import HTMLParser
 from .domain import ValidationError
-COLUMNS={'Número de oportunidad':'opportunity_number','Nombre de contacto principal':'first_name','Apellido de contacto principal':'last_name','Nombre':'name','Cuenta':'account','Fecha de cierre':'close_date','Éxito (%)':'probability','Etapa de ventas':'stage','Estado':'status','Segmento':'segment','Contacto principal':'contact_name','Responsable':'owner','Teléfono':'phone','Fecha de creación de oportunidad':'created_at','Última actualización de oportunidad':'updated_at'}
+COLUMNS={'Número de oportunidad':'opportunity_number','Nombre de contacto principal':'first_name','Apellido de contacto principal':'last_name','Nombre':'name','Cuenta':'account','Fecha de cierre':'close_date','Éxito (%)':'probability','Etapa de ventas':'stage','Estado':'status','Segmento':'segment','Contacto principal':'contact_name','Responsable':'owner','Teléfono':'phone','Importe':'amount','Correo electrónico de responsable':'owner_email','Fecha de creación de oportunidad':'created_at','Última actualización de oportunidad':'updated_at'}
 class ExportTable(HTMLParser):
     def __init__(self):super().__init__();self.rows=[];self.row=None;self.cell=None
     def handle_starttag(self,tag,attrs):

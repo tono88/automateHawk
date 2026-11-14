@@ -9,7 +9,7 @@ El objetivo es una interfaz operativa de admisiones similar al Excel del equipo,
 | 1 Persistencia y recuperación | PostgreSQL local, historial de observaciones, respaldo y restauración | Implementado y verificado localmente | Reiniciar sin perder datos; restaurar una copia y comparar registros |
 | 2 Interfaz de trabajo | Vistas tipo Excel, filtros por asesor/ciclo/etapa/fecha, paneles por módulo y permisos de campo observados | Implementado como piloto; extracción ampliada validada en una muestra | Mapear y probar cada columna, fecha, ciclo y entidad con usuarios del proceso |
 | 3 Gestión sobre Oracle | Edición en lista o formulario, cola, aprobación y escritura verificada | Cola y escritor escalar piloto implementados; prueba institucional real pendiente | Para cada operación: permiso válido, ID estable, control de conflicto, idempotencia, guardado y relectura |
-| 4 Sincronización operativa | Lecturas temporizadas, detalle bajo demanda, reconciliación y recuperación de sesión | Temporizador y trabajador por sesión implementados; cobertura completa pendiente | Medir duración, carga y errores; probar vencimiento de sesión, reinicios y consultas completas |
+| 4 Sincronización operativa | Lecturas temporizadas, detalle bajo demanda, reconciliación y recuperación de sesión | Temporizador, lotes reanudables, dos ventanas, pausa y medición implementados; cobertura real en verificación | Medir duración, carga y errores; probar vencimiento de sesión, reinicios y consultas completas |
 | 5 Operación institucional | SSO, cartera por usuario, mínimos privilegios, secretos, soporte, monitoreo y recuperación externa | Login por pantalla y permisos persistentes implementados; SSO y publicación pendientes | Validar autorización institucional por rol y conjunto de datos; pruebas de restauración y operación |
 | 6 Inteligencia de negocio | Indicadores históricos y tableros confiables | Solo roadmap | Datos completos por cohorte y definiciones aprobadas; reconciliación de CRM, Campus y pagos |
 
@@ -60,3 +60,9 @@ Implementados los formularios de seguimiento, cita e informe de interacción sob
 La copia activa es única en PostgreSQL, con permisos por usuario y campo guardados con vencimiento. La lista comienza sin filtros por responsable. El login verifica la identidad por pantalla y reutiliza permisos vigentes; el escritor vuelve a verificarlos al guardar. Los detalles de funcionamiento y las limitaciones están en [acceso multiusuario](acceso-multiusuario.md).
 
 La carga masiva autenticada usa la acción Exportar de Oracle y procesa su HTML de Excel en memoria, hasta 1,000 filas por exportación. La lectura por desplazamiento permanece como referencia. La cobertura sigue limitada al filtro aplicado en Oracle; no se presenta como un volcado certificado de todo el CRM.
+
+## Avance en sincronización y medición
+
+Implementados: esperas por condiciones de pantalla, lote reanudable con autorización limitada de lectura en segundo plano, pausa cooperativa, ritmo observado y estimado de duración en la interfaz. Obscura se ensayó en el acceso público de Oracle y no pasó la comprobación de compatibilidad; Chromium continúa siendo el motor operativo. Los resultados y límites se explican en [rendimiento de extracción](rendimiento-extraccion.md).
+
+Próximos criterios de salida: cerrar las incidencias del lote con datos reales, conciliar el número de fichas con la consulta original, ampliar y verificar el alcance histórico si se requiere, medir cobertura por módulo y confirmar fuentes de recibos, matrícula y asistencia. La inteligencia de negocio comienza cuando esos denominadores y fuentes estén aprobados, no al terminar un lote parcial.

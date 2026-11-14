@@ -1,3 +1,4 @@
+import {waitForRendered} from './ui-wait.mjs';
 export function readValidationField(){
   const active=document.activeElement;
   const label=Array.from(document.querySelectorAll('label')).find(l=>l.htmlFor===active?.id)?.innerText.trim();
@@ -47,7 +48,7 @@ export function readContactProfile(){
   }
   return {fields,capabilities};
 }
-async function wait(adapter,predicate){for(let i=0;i<40;i++){await adapter.observe();if(await predicate())return;await new Promise(r=>setTimeout(r,200));}throw Error('timeout');}
+async function wait(adapter,predicate){return waitForRendered(adapter,predicate);}
 export async function collectRelatedContact(adapter){
   const ui=adapter.ui,contacts=ui.getByRole('link',{name:'Contactos',exact:true});
   if(!await contacts.count())return {fields:{contact_link_status:'Sin acceso al módulo de contactos'},capabilities:{}};

@@ -44,6 +44,18 @@ class SessionTests(unittest.TestCase):
         s.update(batch_job='synthetic-job',batch_deadline=5000)
         a.logout('hub_session=synthetic-token')
         self.assertFalse(a.sessions);a.rpc.assert_called_once_with('/logout',{'id':'fake'})
+    def test_login_resumes_incomplete_inventory_even_when_some_grants_are_cached(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        for complete in (False,True):
+            a=self.auth();a.attempts={};a.dsn='synthetic-dsn';a.role='reader';a.read_lanes=2;a.execute=Mock()
+            a.rpc.return_value={'principal':'synthetic-user','id':'synthetic-worker','display':'Persona ficticia'}
+            store=SimpleNamespace(records=[{'opportunity_number':'SYNTHETIC-001'}],listing_coverage={'complete':complete},heartbeat=Mock(),request=Mock())
+            with patch('app.auth.ScopedRepository'),patch('app.auth.OracleReadStore',return_value=store):
+                body={'username':'synthetic-user','password':'synthetic-only'};a.login(body)
+                self.assertEqual(body,{})
+            self.assertEqual(a.execute.call_count,0 if complete else 1)
+
     def test_inventory_retries_only_transient_read_failures(self):
         from types import SimpleNamespace
         from unittest.mock import patch

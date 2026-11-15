@@ -21,7 +21,8 @@ class ScreenAuth:
         self.dsn=dsn;self.url=worker_url;self.secret=Path(secret_file).read_text().strip();self.role=role
         self.sessions={};self.attempts={};self.lock=RLock();self.clock=clock
         self.read_lanes=int(os.environ.get('HUB_READ_LANES','2'))
-        if self.read_lanes not in range(1,5):raise ValueError('Read lanes must be between 1 and 4')
+        screen_capacity=int(os.environ.get('HUB_SCREEN_OPERATIONS','2'))
+        if self.read_lanes not in range(1,5) or screen_capacity not in range(1,5) or self.read_lanes>screen_capacity:raise ValueError('Read lanes must fit the screen capacity, between 1 and 4')
         self.pool=ThreadPoolExecutor(max_workers=max(2,self.read_lanes));self.record_locks={}
     def rpc(self,path,body):
         request=Request(self.url+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Worker-Secret':self.secret},method='POST')
@@ -54,7 +55,7 @@ class ScreenAuth:
             token=token_urlsafe(48);now=self.clock()
             session={'worker_id':verified['id'],'principal':principal,'display':verified['display'],'store':store,'created':now,'seen':now,'checked':now,'demo':None,'task_lock':Lock(),'lane_locks':[Lock() for _ in range(self.read_lanes)],'grant_lock':Lock()}
             with self.lock:self.sessions[token]=session
-            if not store.records:store.request('opportunities');self.execute(session)
+            if not store.records or not (store.listing_coverage or {}).get('complete'):store.request('opportunities');self.execute(session)
             return token,session
         except Exception:
             if verified:

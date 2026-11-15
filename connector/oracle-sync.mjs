@@ -121,7 +121,7 @@ export function inAppAdapter(tab) {
   };
 }
 
-export async function configureQuery(adapter) {
+export async function configureQuery(adapter,{number}={}) {
   const {ui,observe,clickAdvanced}=adapter;
   adapter.phase='open_query';
   await openOpportunityQuery(adapter);
@@ -132,17 +132,21 @@ export async function configureQuery(adapter) {
   await observe();
   adapter.phase='scope_ready';
   await ready(adapter,async()=>await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).count()>0);
+  if(number)await prepareNumberFilter(adapter,number);
   adapter.phase='scope_filter';await ui.getByRole('combobox',{name:'Juego de registros',exact:true}).click();
   await ui.getByRole('option',{name:'Todos los registros que puedo ver',exact:true}).click();
   adapter.phase='period_filter';await ui.getByRole('combobox',{name:'Período de cierre',exact:true}).click();
   await ui.getByRole('option',{name:'Año actual',exact:true}).click();
-  for(const label of ['Nombre','Número de oportunidad']) {
+  if(!number)for(const label of ['Nombre','Número de oportunidad']) {
     const filter=ui.getByRole('textbox',{name:label,exact:true});
     if(await filter.count())await filter.fill('');
   }
-  adapter.phase='run_search';await ui.getByRole('button',{name:'Buscar',exact:true}).last().click();await observe();
-  await ready(adapter,async()=>{const grid=await ui.evaluate(readOpportunityGrid);return !!grid?.rows?.length;});
   if(adapter.applyScope)await adapter.applyScope();
+  else{
+    adapter.phase='run_search';await ui.getByRole('button',{name:'Buscar',exact:true}).last().click();await observe();
+    await ready(adapter,async()=>{const grid=await ui.evaluate(readOpportunityGrid);return !!grid?.rows?.length;});
+  }
+  if(number)await selectOpportunityByNumber(adapter,number);
 }
 
 /** Starts a reusable local bridge. Status and data remain in process memory. */
@@ -229,8 +233,8 @@ export function readLinkedActivities() {
 }
 
 export async function collectOpportunityDetail(adapter,number,{reuseQuery=false}={}) {
-  if(!reuseQuery)await configureQuery(adapter);
-  adapter.phase='select_record';await selectOpportunityByNumber(adapter,number);
+  if(!reuseQuery)await configureQuery(adapter,{number});
+  else{adapter.phase='select_record';await selectOpportunityByNumber(adapter,number);}
   adapter.phase='open_detail';await openCachedDetail(adapter,number);
   adapter.phase='verify_identity';
   await ready(adapter,async()=>await adapter.ui.evaluate(readDetailIdentity)===number);
@@ -249,7 +253,7 @@ export async function collectOpportunityDetail(adapter,number,{reuseQuery=false}
   return payload;
 }
 
-export async function selectOpportunityByNumber(adapter,number) {
+async function prepareNumberFilter(adapter,number) {
   const filter=adapter.ui.getByRole('textbox',{name:'Número de oportunidad',exact:true});
   if(!await filter.count()) {
     await adapter.ui.getByRole('button',{name:'Agregar',exact:true}).click();
@@ -259,6 +263,10 @@ export async function selectOpportunityByNumber(adapter,number) {
   }
   await adapter.ui.getByRole('textbox',{name:'Nombre',exact:true}).fill('');
   await filter.fill(number);
+}
+
+export async function selectOpportunityByNumber(adapter,number) {
+  await prepareNumberFilter(adapter,number);
   await adapter.ui.getByRole('button',{name:'Buscar',exact:true}).last().press('Enter');
   await ready(adapter,async()=>{const grid=await adapter.ui.evaluate(readOpportunityGrid);return !!grid?.rows.some(r=>r[0]?.trim()===number);});
 }

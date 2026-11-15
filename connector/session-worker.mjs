@@ -1,3 +1,5 @@
+import {ensureReadPage} from './read-page-auth.mjs';
+import {PageBudget} from './page-budget.mjs';
 import {ensureAdvancedSearch} from './oracle-query.mjs';
 import {applyOpportunityScope,validateQuery,QUERY_YEAR} from './oracle-scope.mjs';
 import {uiSettler} from './ui-settle.mjs';
@@ -20,6 +22,18 @@ const sessions=new Map();let active=0,pendingLogins=0;const waiters=[];
 const LIMIT=Number(process.env.HUB_SCREEN_OPERATIONS||2);
 if(!Number.isInteger(LIMIT)||LIMIT<1||LIMIT>4)throw Error('configuration');
 const MAX_SESSIONS=8,IDLE=15*60*1000,MAX_AGE=8*60*60*1000;
+function takeIdlePage(){
+ const candidates=[];
+ for(const session of sessions.values())session.readPages.forEach((page,index)=>{
+  if(page&&!page.isClosed())candidates.push({session,page,index,at:session.readTimes?.[index]||0});
+ });
+ candidates.sort((a,b)=>(a.index===4?0:1)-(b.index===4?0:1)||a.at-b.at);
+ const held=candidates[0];if(!held)return null;
+ held.session.readPages[held.index]=null;held.session.readKinds[held.index]=null;
+ clearTimeout(held.session.readTimers[held.index]);return held.page;
+}
+const pageBudget=new PageBudget(LIMIT,takeIdlePage),pageReads=new WeakMap();
+
 async function slot(fn){if(active>=LIMIT)await new Promise(r=>waiters.push(r));else active++;try{return await fn();}finally{const next=waiters.shift();if(next)next();else active--;}}
 async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){for(const timer of s.readTimers||[])clearTimeout(timer);await s.context.close().catch(()=>{});}}
 function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
@@ -33,7 +47,7 @@ async function login(body){
   context=await browser.newContext({acceptDownloads:true,locale:'es-GT',viewport:{width:1920,height:1080}});
   // Only this institutional tenant may receive a form submission.
   await context.route('**/*',async route=>{const u=new URL(route.request().url());if(route.request().method()==='POST'&&u.origin!==target.origin&&u.origin!==loginOrigin)return route.abort();return route.continue();});
-    page=await context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});
+    page=await pageBudget.create(context);await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});
     if(!trusted(page)&&new URL(page.url()).origin!==loginOrigin)throw Error('login-destination');
     const user=page.locator('#userid,[id="idcs-signin-basic-signin-form-username|input"]').filter({visible:true}),password=page.locator('input[type="password"]').filter({visible:true});
     await Promise.all([user.first().waitFor({state:'visible',timeout:20000}),password.first().waitFor({state:'visible',timeout:20000})]).catch(()=>{});
@@ -47,7 +61,7 @@ async function login(body){
     if(!await authenticated(page))throw Error('session');
     const identity=await page.locator('h1').first().innerText().catch(()=>'Cuenta de Oracle');
     const id=randomBytes(32).toString('base64url'),now=Date.now();
-    sessions.set(id,{context,seen:now,created:now,busy:false,readPages:[],readTimers:[],readKinds:[],lanes:new Set(),reading:0});await page.close();
+    sessions.set(id,{context,seen:now,created:now,busy:false,readPages:[],readTimers:[],readKinds:[],readTimes:[],lanes:new Set(),reading:0});await page.close();
     return {id,principal:body.username.trim().toLocaleLowerCase('en'),display:identity.slice(0,180)};
   }catch(error){if(context)await context.close();throw error;}finally{pendingLogins--;body.password='';}
 }
@@ -56,16 +70,15 @@ async function run(body){
   const lane=body.lane??0;if(!Number.isInteger(lane)||lane<0||lane>3)throw Error('layout');
   const cacheLane=body.kind==='opportunities'?4:lane;
   const reading=body.kind==='detail'||body.kind==='opportunities';
-  if(s.busy||s.lanes.has(lane)&&body.kind==='detail')throw Error('busy');
+  if(s.busy||reading&&s.lanes.has(cacheLane))throw Error('busy');
   if(!reading&&s.reading)throw Error('write-not-started');
   if(reading)s.reading++;else s.busy=true;
-  if(body.kind==='detail')s.lanes.add(lane);s.seen=Date.now();let page,a;
+  if(reading)s.lanes.add(cacheLane);s.seen=Date.now();let page,a;
   const reusable=['detail','opportunities'].includes(body.kind)&&body.reuse===true;let reuseQuery=false;
   try{
     if(reusable&&s.readKinds[cacheLane]===body.kind&&s.readPages[cacheLane]&&!s.readPages[cacheLane].isClosed()){page=s.readPages[cacheLane];s.readPages[cacheLane]=null;clearTimeout(s.readTimers[cacheLane]);reuseQuery=true;}
-    else{if(reusable&&s.readPages[cacheLane]){await s.readPages[cacheLane].close().catch(()=>{});s.readPages[cacheLane]=null;clearTimeout(s.readTimers[cacheLane]);}page=await s.context.newPage();await page.goto(target.href,{waitUntil:'domcontentloaded',timeout:45000});}
-    await page.getByRole('link',{name:'Página Inicial',exact:true}).waitFor({state:'visible',timeout:30000}).catch(()=>{throw Error('session');});
-    if(!await authenticated(page))throw Error('session');
+    else{if(reusable&&s.readPages[cacheLane]){await s.readPages[cacheLane].close().catch(()=>{});s.readPages[cacheLane]=null;clearTimeout(s.readTimers[cacheLane]);}page=await pageBudget.create(s.context);await page.goto(target.href,{waitUntil:'load',timeout:45000});}
+    await ensureReadPage(page,target.origin);
     a=adapter(page);a.applyScope=()=>applyOpportunityScope(a,body.kind==='opportunities'?validateQuery(body.query):validateQuery());let result;
     if(body.kind==='write')result=await applyScalarChange(a,body.change);
     else if(body.kind==='detail')result=await collectOpportunityDetail(a,body.number,{reuseQuery});
@@ -81,9 +94,10 @@ async function run(body){
       } finally {await download.delete().catch(()=>{});}
     }
     s.seen=Date.now();
-    if(reusable&&!a.discardPage){const held=page;s.readPages[cacheLane]=held;s.readKinds[cacheLane]=body.kind;page=null;clearTimeout(s.readTimers[cacheLane]);s.readTimers[cacheLane]=setTimeout(()=>{if(s.readPages[cacheLane]===held){s.readPages[cacheLane]=null;held.close().catch(()=>{});}},60000);s.readTimers[cacheLane].unref();}
+    const reads=(pageReads.get(page)||0)+(body.kind==='detail'?1:0);pageReads.set(page,reads);
+    if(reusable&&!a.discardPage&&reads<40){const held=page;s.readTimes[cacheLane]=Date.now();s.readPages[cacheLane]=held;s.readKinds[cacheLane]=body.kind;page=null;clearTimeout(s.readTimers[cacheLane]);s.readTimers[cacheLane]=setTimeout(()=>{if(s.readPages[cacheLane]===held){s.readPages[cacheLane]=null;held.close().catch(()=>{});}},60000);s.readTimers[cacheLane].unref();}
     return result;
-  }catch(error){if(error.message==='timeout'&&a?.settleFilters?.pending)console.warn('Pending UI updates:',JSON.stringify(a.settleFilters.pending()));if(a?.scopeDiagnostic)console.warn('Scope verification:',JSON.stringify(a.scopeDiagnostic));console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session','scope'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{if(reading)s.reading--;else s.busy=false;if(body.kind==='detail')s.lanes.delete(lane);if(page)await page.close().catch(()=>{});}
+  }catch(error){if(error.message==='timeout'&&a?.settleFilters?.pending)console.warn('Pending UI updates:',JSON.stringify(a.settleFilters.pending()));if(a?.scopeDiagnostic)console.warn('Scope verification:',JSON.stringify(a.scopeDiagnostic));console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session','scope'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{if(reading)s.reading--;else s.busy=false;if(reading)s.lanes.delete(cacheLane);if(page)await page.close().catch(()=>{});}
 }
 const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
 const http=createServer(async(req,res)=>{

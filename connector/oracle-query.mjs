@@ -1,3 +1,4 @@
+import {waitForRendered} from './ui-wait.mjs';
 /** Open the rendered advanced-search controls, including ADF checkbox variants. */
 export async function ensureAdvancedSearch(ui,observe){
   const scope=ui.getByRole('combobox',{name:'Juego de registros',exact:true});
@@ -7,6 +8,8 @@ export async function ensureAdvancedSearch(ui,observe){
     const hideCheck=ui.getByRole('checkbox',{name:'Ocultar búsqueda avanzada',exact:true}).first();
     const show=ui.getByRole('button',{name:'Mostrar búsqueda avanzada',exact:true}).first();
     const hide=ui.getByRole('button',{name:'Ocultar búsqueda avanzada',exact:true}).first();
+    await waitForRendered({observe},async()=>await scope.count()>0||await showCheck.count()>0||await hideCheck.count()>0||await show.count()>0||await hide.count()>0);
+    if(await scope.count())return;
     if(await showCheck.count()){if(attempt){await showCheck.uncheck();await observe();}await showCheck.check();}
     else if(await hideCheck.count()){await hideCheck.uncheck();await observe();await showCheck.check();}
     else if(await show.count())await show.click();

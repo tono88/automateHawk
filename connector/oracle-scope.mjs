@@ -22,13 +22,15 @@ export async function applyOpportunityScope(adapter,query){
     if(await control.evaluate(e=>e.value)!==value){const arrow=ui.locator('span[id$="::cntrl"]').filter({has:control}).locator('a[id$="::drop"]');
       if(await arrow.count()===1)await arrow.click();else await control.click();await ui.getByRole('option',{name:value,exact:true}).click();await settle();}
   };
+  const setStates=async()=>{
   adapter.phase='scope_states';
   await choose('Estado Operador','Igual que');
   await ui.getByRole('textbox',{name:'Estado',exact:true}).click();
   await waitForRendered(adapter,async()=>await ui.getByRole('checkbox',{name:'Abierta',exact:true}).count()>0);
   for(const state of states)await ui.getByRole('checkbox',{name:state,exact:true}).check();
   for(const state of OPPORTUNITY_STATES.filter(s=>!states.includes(s)))await ui.getByRole('checkbox',{name:state,exact:true}).uncheck();
-  await ui.getByRole('textbox',{name:'Estado',exact:true}).press('Tab');await settle();
+  await ui.getByRole('textbox',{name:'Nombre',exact:true}).click();await settle();
+  };
   adapter.phase='scope_period';
   await choose('Período de cierre','Todo');
   adapter.phase='scope_date_operator';
@@ -41,22 +43,27 @@ export async function applyOpportunityScope(adapter,query){
       const field=ui.getByRole('textbox',{name:label,exact:true});
       await field.fill(oracleDate(value));await field.press('Tab');await settle();
     }
+    await setStates();
     adapter.phase='scope_search';
     await ui.getByRole('button',{name:'Buscar',exact:true}).last().press('Enter');await settle();
-    adapter.phase='scope_verify_dates';
+    adapter.phase='scope_verify';
     const observedFrom=await ui.getByRole('textbox',{name:'De Fecha de cierre',exact:true}).evaluate(e=>e.value);
     const observedTo=await ui.getByRole('textbox',{name:'Para Fecha de cierre',exact:true}).evaluate(e=>e.value);
-    adapter.scopeDiagnostic={requested:{from,to,states},observed:{from:observedFrom,to:observedTo},attempt:attempt+1};
-    verified=normalizeOracleDate(observedFrom)===from&&normalizeOracleDate(observedTo)===to;
+    const observedStates=await ui.getByRole('textbox',{name:'Estado',exact:true}).evaluate(e=>e.value);
+    adapter.scopeDiagnostic={requested:{from,to,states},observed:{from:observedFrom,to:observedTo,states:observedStates},attempt:attempt+1};
+    verified=normalizeOracleDate(observedFrom)===from&&normalizeOracleDate(observedTo)===to&&statesMatch(observedStates,states);
   }
   if(!verified)throw Error('scope');
-  const observedStates=await ui.getByRole('textbox',{name:'Estado',exact:true}).evaluate(e=>e.value);
-  const selected=observedStates==='Todo'?OPPORTUNITY_STATES:observedStates.split(';').map(s=>s.trim());
-  if(selected.length!==states.length||states.some(s=>!selected.includes(s)))throw Error('scope');
+
 }
 
 /** Keep the intermediate interval valid when moving to a later month. */
 export function dateEditOrder(currentTo,from,to){
   const start=['De Fecha de cierre',from],end=['Para Fecha de cierre',to];
   return from>currentTo?[end,start]:[start,end];
+}
+
+export function statesMatch(value,states){
+ const selected=value==='Todo'?OPPORTUNITY_STATES:value.split(';').map(s=>s.trim());
+ return selected.length===states.length&&states.every(s=>selected.includes(s));
 }

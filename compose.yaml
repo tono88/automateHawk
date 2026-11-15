@@ -25,6 +25,7 @@ services:
       HUB_MODE: local
       HUB_AUTH_MODE: screen
       HUB_READ_LANES: ${HUB_READ_LANES:-2}
+      HUB_SCREEN_OPERATIONS: ${HUB_SCREEN_OPERATIONS:-2}
       HUB_WORKER_URL: http://oracle-worker:8767
       HUB_WORKER_SECRET_FILE: /run/secrets/worker_secret
       HUB_DATABASE_DSN_FILE: /run/secrets/hub_database_dsn

@@ -102,3 +102,17 @@ test('leaves already available advanced filters unchanged',async()=>{
  const ui={getByRole:()=>({count:async()=>1})};
  await ensureAdvancedSearch(ui,async()=>{throw Error('Should not toggle');});
 });
+
+test('waits for advanced controls temporarily absent during a partial update',async()=>{
+ let observations=0,expanded=false,clicks=0;
+ const ui={getByRole:(role,{name})=>({first(){return this;},count:async()=>name==='Juego de registros'?(expanded?1:0):role==='checkbox'&&name==='Mostrar búsqueda avanzada'&&observations>=2?1:0,check:async()=>{expanded=true;clicks++;}})};
+ await ensureAdvancedSearch(ui,async()=>{observations++;});assert.equal(clicks,1);assert.ok(expanded);
+});
+test('initial detail lookup sets the official number before widening the query',async()=>{
+ const events=[];
+ const make=(name)=>({last(){return this;},count:async()=>name==='Cancelar'?0:1,click:async()=>{events.push('click:'+name);},press:async()=>{events.push('search');},fill:async value=>{events.push('fill:'+name+':'+value);}});
+ const ui={getByRole:(role,{name})=>make(name),evaluate:async()=>grid()};
+ await configureQuery({ui,observe:async()=>{},clickAdvanced:async()=>{},applyScope:async()=>{events.push('scope-search');}},{number:'SYNTHETIC-001'});
+ assert.ok(events.indexOf('fill:Número de oportunidad:SYNTHETIC-001')<events.indexOf('click:Juego de registros'));
+ assert.ok(events.includes('scope-search'));assert.ok(!events.includes('fill:Número de oportunidad:'));
+});

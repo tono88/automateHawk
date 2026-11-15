@@ -1,12 +1,20 @@
 """One global mirror with persistent, expiring per-user permissions."""
+import os
 from datetime import datetime,timezone
 from psycopg.types.json import Jsonb
 from .persistence import PostgresRepository
 from .domain import ConflictError
 
+def read_grant_minutes(key,default):
+    value=int(os.environ.get(key,str(default)))
+    if not 15<=value<=480:raise ValueError('Read permission lifetime must be between 15 and 480 minutes')
+    return value
+
 class ScopedRepository(PostgresRepository):
     def __init__(self,dsn,principal):
         self.principal=principal;self.observed_fields={}
+        self.basic_minutes=read_grant_minutes('HUB_LIST_GRANT_MINUTES',60)
+        self.detail_minutes=read_grant_minutes('HUB_DETAIL_GRANT_MINUTES',30)
         super().__init__(dsn)
     def grants(self):
         with self.connect() as c:
@@ -15,7 +23,8 @@ class ScopedRepository(PostgresRepository):
     def require(self,number,field=None):
         grant=self.grant(number)
         if not grant:raise PermissionError()
-        if field and (not grant['detail_until'] or grant['detail_until']<datetime.now(timezone.utc) or not grant['capabilities'].get(field)):raise PermissionError()
+        now=datetime.now(timezone.utc)
+        if field and (not grant['detail_until'] or grant['detail_until']<now or not grant['edit_until'] or grant['edit_until']<now or not grant['capabilities'].get(field)):raise PermissionError()
         return grant
     def grant(self,number):
         with self.connect() as c:
@@ -33,13 +42,13 @@ class ScopedRepository(PostgresRepository):
             for row in rows:
                 number=row['opportunity_number'];fields=self.observed_fields.get(number,list(row))
                 c.execute("""INSERT INTO user_permissions(principal,opportunity_number,basic_fields,read_until)
-                  VALUES(%s,%s,%s,now()+interval '1 hour') ON CONFLICT(principal,opportunity_number)
-                  DO UPDATE SET basic_fields=excluded.basic_fields,read_until=excluded.read_until,checked_at=now()""",(self.principal,number,Jsonb(fields)))
+                  VALUES(%s,%s,%s,now()+make_interval(mins => %s)) ON CONFLICT(principal,opportunity_number)
+                  DO UPDATE SET basic_fields=excluded.basic_fields,read_until=excluded.read_until,checked_at=now()""",(self.principal,number,Jsonb(fields),self.basic_minutes))
         self.observed_fields={};return result
     def reconcile_visible_inventory(self,numbers):
         """Expire this principal's missing grants; retain shared data and history."""
         with self.connect() as c:
-            c.execute("""UPDATE user_permissions SET read_until=now(),detail_until=now(),
+            c.execute("""UPDATE user_permissions SET read_until=now(),detail_until=now(),edit_until=now(),
               detail_fields='[]'::jsonb,capabilities='{}'::jsonb,activities_visible=false
               WHERE principal=%s AND NOT(opportunity_number=ANY(%s::text[]))""",
               (self.principal,list(numbers)))
@@ -51,7 +60,8 @@ class ScopedRepository(PostgresRepository):
         for number,d in result['details'].items():
             g=grants.get(number)
             if not g or not g['detail_until'] or g['detail_until']<now:continue
-            details[number]=dict(d,fields={k:v for k,v in d['fields'].items() if k in g['detail_fields']},capabilities=g['capabilities'],activities=d.get('activities') if g['activities_visible'] else {'queried':False,'rows':[]},loaded_at=min(d['loaded_at'],g['checked_at'].isoformat()))
+            edit_valid=bool(g['edit_until'] and g['edit_until']>now)
+            details[number]=dict(d,fields={k:v for k,v in d['fields'].items() if k in g['detail_fields']},capabilities={k:bool(v and edit_valid) for k,v in g['capabilities'].items()},activities=d.get('activities') if g['activities_visible'] else {'queried':False,'rows':[]},loaded_at=min(d['loaded_at'],g['detail_checked_at'].isoformat()))
         result['details']=details
         if not grants:result.update(loaded_at=None,scope='Verificación de permisos pendiente con tu sesión de Oracle')
         return result
@@ -64,13 +74,17 @@ class ScopedRepository(PostgresRepository):
         super().save_detail(number,merged)
         with self.connect() as c:
             c.execute("""UPDATE user_permissions SET detail_fields=%s,capabilities=%s,activities_visible=%s,
-              detail_until=now()+interval '30 minutes',checked_at=now() WHERE principal=%s AND opportunity_number=%s""",(Jsonb(list(detail['fields'])),Jsonb(detail['capabilities']),detail['activities']['queried'],self.principal,number))
+              detail_until=now()+make_interval(mins => %s),edit_until=now()+interval '30 minutes',
+              detail_checked_at=now(),checked_at=now() WHERE principal=%s AND opportunity_number=%s""",(Jsonb(list(detail['fields'])),Jsonb(detail['capabilities']),detail['activities']['queried'],self.detail_minutes,self.principal,number))
     def changes(self,number=None):
         if number:self.require(number)
         rows=super().changes(number)
         if not rows:return []
-        grants=self.grants()
-        return [r for r in rows if r['opportunity_number'] in grants and r['field'] in (grants[r['opportunity_number']]['basic_fields']+grants[r['opportunity_number']]['detail_fields']) and r['actor']==self.principal]
+        grants=self.grants();now=datetime.now(timezone.utc)
+        def visible(row):
+            g=grants.get(row['opportunity_number'])
+            return bool(g and row['field'] in (g['basic_fields']+(g['detail_fields'] if g['detail_until'] and g['detail_until']>now else [])))
+        return [r for r in rows if visible(r) and r['actor']==self.principal]
     def propose(self,number,field,*args):
         self.require(number,field);return super().propose(number,field,*args)
     def cancel(self,identifier,actor):

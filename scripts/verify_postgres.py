@@ -101,6 +101,20 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         a.save_read_progress(row['opportunity_number'],'partial')
         assert OracleReadStore(ScopedRepository(dsn,'synthetic-user-a')).request('details_batch')['total']==1
         assert a.read_progress()[row['opportunity_number']]['state']=='partial'
+        # Longer reading never extends editing or invents a fresh detail check.
+        a.basic_minutes=480;a.detail_minutes=480
+        a.save_detail(row['opportunity_number'],{'fields':{'cycle':'2271','name':row['name']},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]}})
+        grant=a.grant(row['opportunity_number'])
+        assert 28790<(grant['detail_until']-grant['detail_checked_at']).total_seconds()<=28800
+        assert 1790<(grant['edit_until']-grant['detail_checked_at']).total_seconds()<=1800
+        checked=grant['detail_checked_at']
+        a.save_snapshot([row],'Renovación ficticia de la lista')
+        assert a.grant(row['opportunity_number'])['detail_checked_at']==checked
+        with a.connect() as c:c.execute("UPDATE user_permissions SET edit_until=now()-interval '1 second' WHERE principal=%s",('synthetic-user-a',))
+        assert a.load()['details'][row['opportunity_number']]['fields']['cycle']=='2271'
+        assert not a.load()['details'][row['opportunity_number']]['capabilities']['name']
+        try:a.require(row['opportunity_number'],'name');raise AssertionError('Expired edit allowed by long read grant')
+        except PermissionError:pass
         with a.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
         assert not a.load()['records']
         assert b.load()['records']
@@ -116,7 +130,13 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         a.reconcile_visible_inventory(set())
         assert not a.load()['records']
         assert b.load()['records']
-        print(json.dumps({'postgresql_integration':'passed','checks':48,'data':'synthetic isolated database'}))
+        with b.connect() as c:
+            c.execute("UPDATE user_permissions SET detail_checked_at=NULL,edit_until=NULL,detail_until=now()+interval '10 minutes',checked_at=now() WHERE principal=%s",('synthetic-user-b',))
+            c.execute((Path(__file__).resolve().parents[1]/'app/migrations/009_separate_read_edit_grants.sql').read_text(encoding='utf-8'))
+        legacy=b.grant(row['opportunity_number'])
+        assert legacy['edit_until']==legacy['detail_until']
+        assert legacy['detail_checked_at']==legacy['detail_until']-timedelta(minutes=30)
+        print(json.dumps({'postgresql_integration':'passed','checks':56,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

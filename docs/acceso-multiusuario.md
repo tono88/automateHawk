@@ -51,3 +51,9 @@ Referencias: [contextos aislados de Playwright](https://playwright.dev/docs/brow
 ## Reconciliación del inventario visible
 
 Al terminar todas las particiones verificadas de 2026, se vencen los permisos del usuario para oportunidades ausentes de su consulta actual. La copia global y su historial permanecen disponibles para otros usuarios autorizados. Una consulta interrumpida, fallida o con un límite de exportación sin resolver no revoca permisos por ausencia. Esto no prolonga la vigencia de lectura ni habilita nuevas ediciones.
+
+## Vigencias independientes
+
+La configuración conserva 60 minutos para la lista y 30 para detalles. Se preparan `HUB_LIST_GRANT_MINUTES` y `HUB_DETAIL_GRANT_MINUTES`, de 15 a 480 minutos, para una decisión explícita sobre la consulta durante la jornada. Un cambio de configuración se aplica únicamente a observaciones nuevas en Oracle; no renueva retrospectivamente permisos vencidos.
+
+La edición conserva un vencimiento separado de 30 minutos, además de la verificación del control y del valor actual en Oracle al guardar. Una lectura de mayor duración no extiende ese permiso. Renovar la lista tampoco cambia la fecha de comprobación del detalle. La migración de permisos anteriores conserva su vencimiento original y reconstruye su observación restando los 30 minutos de la política previa; no usa una renovación posterior de la lista como prueba de acceso al detalle.

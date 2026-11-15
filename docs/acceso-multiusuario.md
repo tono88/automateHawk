@@ -12,7 +12,7 @@ Solo se permiten formularios POST hacia el portal de Fusion configurado y su dom
 
 El cliente recibe una cookie opaca HttpOnly y SameSite=Strict; no recibe las cookies de Oracle, tokens del trabajador ni roles elegibles. La sesión se verifica en el servidor. Vence tras 15 minutos de inactividad o un máximo de ocho horas. Las consultas automáticas de la interfaz no prolongan la inactividad. Cerrar sesión revoca el acceso y cierra el contexto. Reiniciar cualquiera de los servicios exige volver a ingresar.
 
-Un navegador Chromium atiende como máximo dos tareas simultáneas y ocho contextos activos en este piloto. Cada persona usa un contexto propio, sin compartir cookies; las páginas se cierran después de cada trabajo. Al llegar al límite se informa que debe esperar. Son límites iniciales, pendientes de medición de carga. La expiración libera contextos y sesiones, sin borrar los datos de negocio persistidos.
+Un navegador Chromium admite de una a cuatro tareas simultáneas y hasta ocho contextos activos. La configuración compartida conserva dos tareas; el piloto local utiliza cuatro tras medir el rendimiento. Cada persona usa un contexto propio, sin compartir cookies. El límite de páginas es global: se reutilizan temporalmente las páginas de lectura y se renuevan tras cuarenta fichas; para dar espacio a otra tarea se cierran únicamente páginas en reposo. La expiración libera contextos y sesiones, sin borrar los datos de negocio persistidos.
 
 El servicio de navegador está únicamente en la red interna de Docker, protegido con un secreto propio fuera de Git y sin puerto publicado. El portal y PostgreSQL continúan publicados solo en loopback. La cookie no usa Secure en este acceso HTTP exclusivamente local; antes de una publicación institucional se requieren HTTPS, cookie Secure, origen público validado, límites y pruebas de carga. No debe exponerse la configuración local directamente a una red compartida.
 
@@ -47,3 +47,7 @@ El modo de pruebas sin autenticación solo se admite explícitamente con HUB_MOD
 MFA y recuperación interactiva de desafíos; autorización institucional por identidad y roles; HTTPS; pruebas con responsables y varias cuentas reales; métricas de carga; validación oficial del escritor piloto y envío de actividades. La alternativa futura de SSO y autorización delegada requiere registro de la aplicación por TI y no es necesaria para este piloto por pantallas. Node-RED continúa pendiente.
 
 Referencias: [contextos aislados de Playwright](https://playwright.dev/docs/browser-contexts), [riesgos de persistir estado de autenticación](https://playwright.dev/docs/auth), [OAuth de Oracle Sales para una integración futura](https://docs.oracle.com/en/cloud/saas/sales/faaps/configure_oauth.html).
+
+## Reconciliación del inventario visible
+
+Al terminar todas las particiones verificadas de 2026, se vencen los permisos del usuario para oportunidades ausentes de su consulta actual. La copia global y su historial permanecen disponibles para otros usuarios autorizados. Una consulta interrumpida, fallida o con un límite de exportación sin resolver no revoca permisos por ausencia. Esto no prolonga la vigencia de lectura ni habilita nuevas ediciones.

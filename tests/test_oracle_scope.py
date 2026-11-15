@@ -52,3 +52,18 @@ class ScopeTests(unittest.TestCase):
             return {'records':[],'empty_verified':True}
         coverage=inventory(fetch,lambda p:None,lambda c:None)
         self.assertFalse(coverage['complete']);self.assertEqual(len(coverage['unresolved']),3)
+    def test_grant_reconciliation_requires_complete_verified_inventory(self):
+        from unittest.mock import Mock
+        finalize=Mock()
+        inventory(lambda q:result(q),lambda p:None,lambda c:None,finalize=finalize)
+        self.assertEqual(len(finalize.call_args.args[0]),12)
+        finalize.reset_mock()
+        def saturated(q):
+            return result(q,PARTITION_LIMIT) if q['from']=='2026-01-01' else {'records':[],'empty_verified':True}
+        inventory(saturated,lambda p:None,lambda c:None,finalize=finalize)
+        finalize.assert_not_called()
+        with self.assertRaises(ValidationError):
+            inventory(lambda q:{'records':[]},lambda p:None,lambda c:None,finalize=finalize)
+        finalize.assert_not_called()
+        inventory(lambda q:{'records':[],'empty_verified':True},lambda p:None,lambda c:None,finalize=finalize)
+        finalize.assert_called_once_with(set())

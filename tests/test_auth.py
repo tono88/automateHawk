@@ -60,7 +60,7 @@ class SessionTests(unittest.TestCase):
         from types import SimpleNamespace
         from unittest.mock import patch
         a=self.auth();session=a.sessions['synthetic-token'];session['store'].repository=SimpleNamespace()
-        invoke=lambda fetch,ingest,progress:fetch({})
+        invoke=lambda fetch,ingest,progress,**kwargs:fetch({})
         a.session_rpc=Mock(side_effect=[AuthError('unavailable'),{'empty_verified':True}])
         with patch('app.oracle_scope.inventory',side_effect=invoke),patch('app.auth.sleep'):
             self.assertEqual(a.refresh_listing(session),{'records':[],'empty_verified':True})

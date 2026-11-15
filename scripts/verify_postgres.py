@@ -104,7 +104,19 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         with a.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
         assert not a.load()['records']
         assert b.load()['records']
-        print(json.dumps({'postgresql_integration':'passed','checks':41,'data':'synthetic isolated database'}))
+        missing=dict(row,opportunity_number='SYNTHETIC-MISSING')
+        a.save_snapshot([row,missing],'Inventario ficticio inicial')
+        a.save_detail(missing['opportunity_number'],{'fields':{'name':'Ficticio'},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]}})
+        a.reconcile_visible_inventory({row['opportunity_number']})
+        assert len(a.load()['records'])==1
+        assert missing['opportunity_number'] not in a.load()['details']
+        assert a.grant(missing['opportunity_number']) is None
+        assert b.grant(row['opportunity_number']) is not None
+        assert len(repo.load()['records'])==3
+        a.reconcile_visible_inventory(set())
+        assert not a.load()['records']
+        assert b.load()['records']
+        print(json.dumps({'postgresql_integration':'passed','checks':48,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

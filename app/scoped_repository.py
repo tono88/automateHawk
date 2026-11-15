@@ -36,6 +36,13 @@ class ScopedRepository(PostgresRepository):
                   VALUES(%s,%s,%s,now()+interval '1 hour') ON CONFLICT(principal,opportunity_number)
                   DO UPDATE SET basic_fields=excluded.basic_fields,read_until=excluded.read_until,checked_at=now()""",(self.principal,number,Jsonb(fields)))
         self.observed_fields={};return result
+    def reconcile_visible_inventory(self,numbers):
+        """Expire this principal's missing grants; retain shared data and history."""
+        with self.connect() as c:
+            c.execute("""UPDATE user_permissions SET read_until=now(),detail_until=now(),
+              detail_fields='[]'::jsonb,capabilities='{}'::jsonb,activities_visible=false
+              WHERE principal=%s AND NOT(opportunity_number=ANY(%s::text[]))""",
+              (self.principal,list(numbers)))
     def load(self):
         result=super().load();grants=self.grants();now=datetime.now(timezone.utc)
         result['records']=[{k:v for k,v in r.items() if k in grants[r['opportunity_number']]['basic_fields'] or k.startswith('_') or k=='opportunity_number'} for r in result['records'] if r['opportunity_number'] in grants]

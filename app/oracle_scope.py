@@ -21,7 +21,7 @@ def split_query(query):
     if len(query['states'])>1:return [dict(query,states=[state]) for state in query['states']]
     return []
 
-def inventory(fetch,ingest,progress,year=QUERY_YEAR):
+def inventory(fetch,ingest,progress,year=QUERY_YEAR,finalize=None):
     pending=month_queries(year);seen=set();leaves=[];unresolved=[]
     started=datetime.now(timezone.utc).isoformat()
     def report(complete=False):
@@ -48,4 +48,7 @@ def inventory(fetch,ingest,progress,year=QUERY_YEAR):
             ingest(dict(payload,scope=f'Todos los registros que puedo ver · todos los estados · cierre en {year}'))
             seen.update(row['opportunity_number'] for row in rows)
         leaves.append(dict(query,rows=len(rows),bounded=len(rows)<PARTITION_LIMIT));report()
+    # Absence is authoritative only after every partition has been verified.
+    # Interrupted or saturated inventories must never revoke existing grants.
+    if not unresolved and finalize:finalize(seen)
     return report(complete=not unresolved)

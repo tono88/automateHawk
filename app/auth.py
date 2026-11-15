@@ -249,4 +249,7 @@ class ScreenAuth:
         def ingest(result):
             store.repository.observed_fields=result.pop('visible_fields',{})
             store.ingest(result,preserve_job=True)
-        return inventory(fetch,ingest,store.record_listing_coverage)
+        def finalize(numbers):
+            store.repository.reconcile_visible_inventory(numbers)
+            store._reload()
+        return inventory(fetch,ingest,store.record_listing_coverage,finalize=finalize)

@@ -197,6 +197,19 @@ class ReadModelTests(unittest.TestCase):
         self.assertEqual(self.s.extraction_progress()['completed'],1)
         self.assertEqual(self.s.request('details_batch')['total'],1)
 
+    def test_another_users_global_refresh_does_not_postpone_own_inventory(self):
+        from datetime import datetime,timezone,timedelta
+        now=datetime.now(timezone.utc);self.s.settings['enabled']=True;self.s.heartbeat()
+        self.s.loaded_at=now.isoformat()
+        self.s.listing_coverage={'complete':True,'finished_at':(now-timedelta(minutes=20)).isoformat()}
+        self.assertEqual(self.s.scheduler_tick()['kind'],'opportunities')
+
+    def test_incomplete_own_inventory_is_resumed_even_with_fresh_global_data(self):
+        from datetime import datetime,timezone
+        self.s.settings['enabled']=True;self.s.heartbeat();self.s.loaded_at=datetime.now(timezone.utc).isoformat()
+        self.s.listing_coverage={'complete':False,'finished_at':None}
+        self.assertEqual(self.s.scheduler_tick()['kind'],'opportunities')
+
 class ReadHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls): test_lab.HttpTests.setUpClass.__func__(cls)

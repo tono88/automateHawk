@@ -52,6 +52,8 @@ Referencias: [contextos aislados de Playwright](https://playwright.dev/docs/brow
 
 Al terminar todas las particiones verificadas de 2026, se vencen los permisos del usuario para oportunidades ausentes de su consulta actual. La copia global y su historial permanecen disponibles para otros usuarios autorizados. Una consulta interrumpida, fallida o con un límite de exportación sin resolver no revoca permisos por ausencia. Esto no prolonga la vigencia de lectura ni habilita nuevas ediciones.
 
+La frecuencia de inventario se calcula desde la última consulta completa del propio usuario. Una actualización de la copia global realizada por otra cuenta no posterga su verificación ni le transfiere permisos. Los recorridos incompletos se retoman respetando el tiempo de reintento y las pausas explícitas.
+
 ## Vigencias independientes
 
 La configuración compartida conserva 60 minutos para la lista y 30 para detalles. `HUB_LIST_GRANT_MINUTES` y `HUB_DETAIL_GRANT_MINUTES` admiten de 15 a 480 minutos. Para este despliegue se autorizó una jornada de ocho horas de consulta, con sesión válida y permisos separados por usuario. La configuración local utiliza 480 minutos; la edición mantiene su vigencia independiente.

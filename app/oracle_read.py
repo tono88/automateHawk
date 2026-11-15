@@ -298,7 +298,9 @@ class OracleReadStore:
             if not self.settings['enabled'] or not self.worker_seen or monotonic()-self.worker_seen>=90:return None
             if self.job and self.job['state'] in ('pending','running','paused'):return None
             if any(r.get('needs_refresh') for r in self.read_outcomes.values()):return self.request('details_batch')
-            if self.loaded_at:
-                elapsed=(datetime.now(timezone.utc)-datetime.fromisoformat(self.loaded_at)).total_seconds()
+            if self.listing_coverage and not self.listing_coverage.get('complete'):return self.request()
+            observed=(self.listing_coverage or {}).get('finished_at') or self.loaded_at
+            if observed:
+                elapsed=(datetime.now(timezone.utc)-datetime.fromisoformat(observed)).total_seconds()
                 if elapsed<self.settings['interval_minutes']*60:return None
             return self.request()

@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "oracle-worker": "node connector/run-worker.mjs",
-    "test": "node --test tests/connector.test.mjs"
+    "test": "node --test"
   },
   "dependencies": {
     "playwright": "1.62.1"

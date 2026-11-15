@@ -47,7 +47,7 @@ Esta configuración es un piloto local. Antes de publicarla institucionalmente s
 
 ```sh
 python -m unittest discover -s tests
-node --test tests/connector.test.mjs tests/oracle-write.test.mjs
+npm test
 .venv/Scripts/python -m scripts.verify_postgres
 .venv/Scripts/python -m scripts.backup_local --verify
 ```

@@ -28,6 +28,7 @@ class OracleReadStore:
         self.batch_failed=set();self.batch_partial=set()
         self.batch_inflight=set()
         self.read_outcomes={}
+        self.read_versions={}
         self.read_seconds=[]
         self.job_clock=0
         self.repository=repository
@@ -74,7 +75,7 @@ class OracleReadStore:
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             if kind=='details_batch':
                 self.read_seconds=[]
-                self.batch_numbers=[r['opportunity_number'] for r in self.records if (self.details.get(r['opportunity_number'],{}).get('schema_version',1)<2 or self.details.get(r['opportunity_number'],{}).get('pending_modules')) and self.read_outcomes.get(r['opportunity_number'],{}).get('state')!='completed']
+                self.batch_numbers=[r['opportunity_number'] for r in self.records if self.needs_detail(r['opportunity_number'])]
                 self.batch_numbers.sort(key=lambda n:{'failed':1,'partial':2}.get(self.read_outcomes.get(n,{}).get('state'),0))
                 self.batch_done=set();self.batch_failed=set();self.batch_partial=set()
                 self.batch_inflight=set()
@@ -216,16 +217,28 @@ class OracleReadStore:
             self.failure_count=0;self.retry_after=0
         return self.status()
 
+    def needs_detail(self,number):
+        outcome=self.read_outcomes.get(number,{})
+        if outcome.get('needs_refresh') or outcome.get('state') in ('failed','partial','reading'):return True
+        if outcome.get('state')=='completed':return False
+        detail=self.details.get(number,{})
+        return detail.get('schema_version',1)<2 or bool(detail.get('pending_modules'))
+
     def extraction_progress(self):
-        completed=sum((self.details.get(r['opportunity_number'],{}).get('schema_version',1)>=2 and not self.details.get(r['opportunity_number'],{}).get('pending_modules')) or self.read_outcomes.get(r['opportunity_number'],{}).get('state')=='completed' for r in self.records)
+        completed=sum(not self.needs_detail(r['opportunity_number']) for r in self.records)
         failed=sum(self.read_outcomes.get(r['opportunity_number'],{}).get('state')=='failed' for r in self.records)
         return {'completed':completed,'pending':len(self.records)-completed,'failed':failed,'partial':sum(self.read_outcomes.get(r['opportunity_number'],{}).get('state')=='partial' for r in self.records)}
 
     def _read_outcome(self,number,state,attempts=0,error_code=''):
+        if state=='reading':self.read_versions[number]=next((r.get('_version') for r in self.records if r['opportunity_number']==number),None)
+        version=self.read_versions.get(number)
         if self.repository and hasattr(self.repository,'save_read_progress'):
-            self.repository.save_read_progress(number,state,attempts,error_code)
+            self.repository.save_read_progress(number,state,attempts,error_code,source_version=version)
+        if state!='reading':self.read_versions.pop(number,None)
         old=self.read_outcomes.get(number,{})
-        self.read_outcomes[number]={'state':state,'schema_version':2,'attempts':old.get('attempts',0)+attempts,'error_code':error_code}
+        current=next((r.get('_version') for r in self.records if r['opportunity_number']==number),None)
+        changed=state=='completed' and version is not None and current is not None and version!=current
+        self.read_outcomes[number]={'state':state,'schema_version':2,'attempts':old.get('attempts',0)+attempts,'error_code':error_code,'source_version':version,'needs_refresh':changed}
 
     def read_attempt(self,number,attempt):
         with self.lock:
@@ -283,7 +296,8 @@ class OracleReadStore:
         with self.lock:
             if self.retry_after>monotonic():return None
             if not self.settings['enabled'] or not self.worker_seen or monotonic()-self.worker_seen>=90:return None
-            if self.job and self.job['state'] in ('pending','running'):return None
+            if self.job and self.job['state'] in ('pending','running','paused'):return None
+            if any(r.get('needs_refresh') for r in self.read_outcomes.values()):return self.request('details_batch')
             if self.loaded_at:
                 elapsed=(datetime.now(timezone.utc)-datetime.fromisoformat(self.loaded_at)).total_seconds()
                 if elapsed<self.settings['interval_minutes']*60:return None

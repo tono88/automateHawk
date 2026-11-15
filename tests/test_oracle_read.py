@@ -151,6 +151,45 @@ class ReadModelTests(unittest.TestCase):
         self.s.heartbeat();job=self.s.scheduler_tick();self.assertEqual(job['state'],'pending')
         self.assertIsNone(self.s.scheduler_tick())
 
+    def test_changed_source_during_read_is_not_marked_current_and_is_requeued(self):
+        self.s.ingest(payload());number='SYNTHETIC-001';self.s.records[0]['_version']=1
+        self.s.request('details_batch');self.s.claim();self.s.read_attempt(number,1)
+        self.s.records[0]['_version']=2
+        detail={'opportunity_number':number,'schema_version':2,'fields':{'cycle':'2271'}}
+        self.s.ingest_detail(detail)
+        self.assertTrue(self.s.read_outcomes[number]['needs_refresh'])
+        self.assertEqual(self.s.extraction_progress()['completed'],0)
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+        self.s.claim();self.s.read_attempt(number,1);self.s.ingest_detail(detail)
+        self.assertFalse(self.s.read_outcomes[number]['needs_refresh'])
+        self.assertEqual(self.s.request('details_batch')['total'],0)
+
+    def test_periodic_detail_refresh_requires_enabled_schedule_and_connection(self):
+        from datetime import datetime,timezone
+        self.s.ingest(payload());self.s.read_outcomes['SYNTHETIC-001']={'state':'completed','needs_refresh':True}
+        self.s.loaded_at=datetime.now(timezone.utc).isoformat()
+        self.assertIsNone(self.s.scheduler_tick())
+        self.s.settings['enabled']=True
+        self.assertIsNone(self.s.scheduler_tick())
+        self.s.heartbeat();self.assertEqual(self.s.scheduler_tick()['kind'],'details_batch')
+        self.assertIsNone(self.s.scheduler_tick())
+
+    def test_failed_refresh_preserves_old_values_but_remains_retryable(self):
+        self.s.ingest(payload());number='SYNTHETIC-001'
+        self.s.ingest_detail({'opportunity_number':number,'schema_version':2,'fields':{'cycle':'2271'}})
+        self.s.read_outcomes[number]['needs_refresh']=True
+        self.s.request('details_batch');self.s.claim();self.s.read_attempt(number,1)
+        self.s.skip_detail(number)
+        self.assertEqual(self.s.details[number]['fields']['cycle'],'2271')
+        self.assertEqual(self.s.extraction_progress()['completed'],0)
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+
+    def test_periodic_refresh_does_not_override_an_explicit_pause(self):
+        self.s.ingest(payload());self.s.settings['enabled']=True;self.s.heartbeat()
+        self.s.read_outcomes['SYNTHETIC-001']={'state':'completed','needs_refresh':True}
+        self.s.job={'kind':'details_batch','state':'paused'}
+        self.assertIsNone(self.s.scheduler_tick())
+
 class ReadHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls): test_lab.HttpTests.setUpClass.__func__(cls)

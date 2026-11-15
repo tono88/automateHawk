@@ -205,6 +205,7 @@ class ScreenAuth:
                       finished_at=datetime.now(timezone.utc).isoformat())
                 else:
                     store.repository.snapshot_started=datetime.now(timezone.utc)
+                    if job['kind']=='detail':store.read_attempt(job['opportunity_number'],1)
                     result=self.session_rpc(session,{'kind':job['kind'],'number':job.get('opportunity_number')})
                     if job['kind']=='detail':store.ingest_detail(result)
                     else:

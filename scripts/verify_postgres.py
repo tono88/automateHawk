@@ -136,7 +136,20 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         legacy=b.grant(row['opportunity_number'])
         assert legacy['edit_until']==legacy['detail_until']
         assert legacy['detail_checked_at']==legacy['detail_until']-timedelta(minutes=30)
-        print(json.dumps({'postgresql_integration':'passed','checks':56,'data':'synthetic isolated database'}))
+        b.save_read_progress(row['opportunity_number'],'reading',1)
+        b.save_snapshot([dict(row,name='Versión posterior ficticia')],'Cambio ficticio durante una lectura')
+        b.save_read_progress(row['opportunity_number'],'completed')
+        assert b.read_progress()[row['opportunity_number']]['needs_refresh']
+        b.save_read_progress(row['opportunity_number'],'reading',1)
+        b.save_read_progress(row['opportunity_number'],'completed')
+        assert not b.read_progress()[row['opportunity_number']]['needs_refresh']
+        with b.connect() as c:c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '25 hours' WHERE principal=%s",('synthetic-user-b',))
+        assert b.read_progress()[row['opportunity_number']]['needs_refresh']
+        with b.connect() as c:c.execute("UPDATE detail_read_progress SET source_version=NULL,updated_at=now() WHERE principal=%s",('synthetic-user-b',))
+        assert not b.read_progress()[row['opportunity_number']]['needs_refresh']
+        with b.connect() as c:c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '1 minute' WHERE principal=%s",('synthetic-user-b',))
+        assert b.read_progress()[row['opportunity_number']]['needs_refresh']
+        print(json.dumps({'postgresql_integration':'passed','checks':61,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

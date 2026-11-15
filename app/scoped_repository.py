@@ -110,16 +110,27 @@ class ScopedRepository(PostgresRepository):
 
     def read_progress(self):
         with self.connect() as c:
-            rows=c.execute('''SELECT r.opportunity_number,r.state,r.attempts,r.error_code,r.schema_version
+            rows=c.execute('''SELECT r.opportunity_number,r.state,r.attempts,r.error_code,r.schema_version,r.source_version,
+              (r.state='completed' AND (
+                r.updated_at<now()-interval '24 hours'
+                OR (r.source_version IS NOT NULL AND r.source_version<>o.version)
+                OR (r.source_version IS NULL AND EXISTS(
+                  SELECT 1 FROM opportunity_history h WHERE h.opportunity_number=o.opportunity_number
+                  AND h.source_version=o.version AND h.observed_at>r.updated_at)))) AS needs_refresh
               FROM detail_read_progress r JOIN user_permissions p
               ON p.principal=r.principal AND p.opportunity_number=r.opportunity_number
+              JOIN opportunities o ON o.opportunity_number=r.opportunity_number
               WHERE r.principal=%s AND p.read_until>now()''',(self.principal,)).fetchall()
         return {r['opportunity_number']:{k:v for k,v in r.items() if k!='opportunity_number'} for r in rows}
-    def save_read_progress(self,number,state,attempts=0,error_code=''):
+    def save_read_progress(self,number,state,attempts=0,error_code='',source_version=None):
         self.require(number)
         if state not in ('reading','completed','partial','failed') or error_code not in ('','timeout','layout','permission','unavailable','contact-unavailable'):raise ValueError('Invalid read outcome')
+        if source_version is not None and (type(source_version)!=int or source_version<1):raise ValueError('Invalid source version')
         with self.connect() as c:
-            c.execute("""INSERT INTO detail_read_progress(principal,opportunity_number,state,attempts,error_code)
-              VALUES(%s,%s,%s,%s,%s) ON CONFLICT(principal,opportunity_number) DO UPDATE
+            if state=='reading' and source_version is None:
+                source_version=c.execute('SELECT version FROM opportunities WHERE opportunity_number=%s',(number,)).fetchone()['version']
+            c.execute("""INSERT INTO detail_read_progress(principal,opportunity_number,state,attempts,error_code,source_version)
+              VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT(principal,opportunity_number) DO UPDATE
               SET state=excluded.state,attempts=detail_read_progress.attempts+excluded.attempts,
-                  error_code=excluded.error_code,schema_version=2,updated_at=now()""",(self.principal,number,state,attempts,error_code))
+                  error_code=excluded.error_code,schema_version=2,updated_at=now(),
+                  source_version=coalesce(excluded.source_version,detail_read_progress.source_version)""",(self.principal,number,state,attempts,error_code,source_version))

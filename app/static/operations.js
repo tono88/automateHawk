@@ -49,7 +49,8 @@ window.UnisOracleLive = (() => {
     const term=query.toLocaleLowerCase('es');
     return state.records.filter(row => {
       if(term && ![row.opportunity_number,row.name,row.first_name,row.last_name,row.owner,row.account,value(row,'career'),value(row,'campus_id')].join(' ').toLocaleLowerCase('es').includes(term)) return false;
-      const extracted=(state.details?.[row.opportunity_number]?.schema_version>=2&&!state.details?.[row.opportunity_number]?.pending_modules?.length)||state.read_states?.[row.opportunity_number]?.state==='completed';
+      const outcome=state.read_states?.[row.opportunity_number]||{};
+      const extracted=!outcome.needs_refresh&&!['reading','failed','partial'].includes(outcome.state)&&((state.details?.[row.opportunity_number]?.schema_version>=2&&!state.details?.[row.opportunity_number]?.pending_modules?.length)||outcome.state==='completed');
       if(detailFilter==='pending'&&extracted||detailFilter==='failed'&&state.read_states?.[row.opportunity_number]?.state!=='failed')return false;
       if(faculty && value(row,'faculty')!==faculty)return false;
       if(oracleStatus && row.status!==oracleStatus)return false;
@@ -142,6 +143,8 @@ window.UnisOracleLive = (() => {
     return `<th scope="col" aria-sort="${active?sortDirection==='asc'?'ascending':'descending':'none'}"><button class="column-sort" data-sort="aspirant">ASPIRANTE / OPORTUNIDAD <span aria-hidden="true">${sortKey==='aspirant'?sortDirection==='asc'?'↑':'↓':'↕'}</span></button><button class="number-sort" data-sort="opportunity_number" title="Ordenar por número de oportunidad">Número ${sortKey==='opportunity_number'?sortDirection==='asc'?'↑':'↓':'↕'}</button></th>`;
   }
   function detailStateLabel(number){
+    if(state.read_states?.[number]?.needs_refresh)return 'Actualización de la ficha pendiente';
+    if(state.read_states?.[number]?.state==='reading')return 'Actualizando ficha';
     if(state.read_states?.[number]?.state==='partial')return 'Detalle parcial · revisar '+(catalog.fields[state.details?.[number]?.validation_field]?.label||'validación en Oracle');
     if(state.read_states?.[number]?.state==='failed')return 'Lectura pendiente de reintento';
     const status=state.detail_states?.[number];

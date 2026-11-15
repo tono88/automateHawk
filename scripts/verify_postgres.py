@@ -96,7 +96,7 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         with a.connect() as c:c.execute("UPDATE user_permissions SET detail_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
         assert a.load()['detail_states'][row['opportunity_number']]=='permission_expired' and not a.load()['details']
         resumed=OracleReadStore(ScopedRepository(dsn,'synthetic-user-a'))
-        assert resumed.request('details_batch')['total']==0
+        assert resumed.request('details_batch')['total']==1
         assert not resumed.details
         a.save_read_progress(row['opportunity_number'],'partial')
         assert OracleReadStore(ScopedRepository(dsn,'synthetic-user-a')).request('details_batch')['total']==1
@@ -149,7 +149,38 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         assert not b.read_progress()[row['opportunity_number']]['needs_refresh']
         with b.connect() as c:c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '1 minute' WHERE principal=%s",('synthetic-user-b',))
         assert b.read_progress()[row['opportunity_number']]['needs_refresh']
-        print(json.dumps({'postgresql_integration':'passed','checks':61,'data':'synthetic isolated database'}))
+        reader=ScopedRepository(dsn,'synthetic-policy-user');reader.basic_minutes=reader.detail_minutes=480
+        reader.save_snapshot([row],'Cartera recién comprobada ficticia')
+        reader.save_detail(row['opportunity_number'],{'fields':{'name':'Persona ficticia'},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]}})
+        reader.save_read_progress(row['opportunity_number'],'reading',1)
+        reader.save_read_progress(row['opportunity_number'],'completed')
+        with reader.connect() as c:
+            c.execute("UPDATE user_permissions SET detail_checked_at=now()-interval '2 hours',detail_until=now()-interval '90 minutes',edit_until=now()-interval '90 minutes' WHERE principal=%s",(reader.principal,))
+            c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '119 minutes' WHERE principal=%s",(reader.principal,))
+        before=reader.grant(row['opportunity_number']);other=b.grant(row['opportunity_number'])
+        assert reader.extend_observed_detail_reads()==1
+        after=reader.grant(row['opportunity_number'])
+        assert after['edit_until']==before['edit_until']
+        assert after['detail_checked_at']==before['detail_checked_at']
+        assert after['detail_fields']==before['detail_fields'] and after['capabilities']==before['capabilities']
+        assert after['detail_until']==before['detail_checked_at']+timedelta(hours=8)
+        try:reader.require(row['opportunity_number'],'name');raise AssertionError('Policy transition extended editing')
+        except PermissionError:pass
+        assert b.grant(row['opportunity_number'])['detail_until']==other['detail_until']
+        assert reader.extend_observed_detail_reads()==0
+        reader.reconcile_visible_inventory(set())
+        with reader.connect() as c:revoked=c.execute('SELECT revoked_at FROM user_permissions WHERE principal=%s',(reader.principal,)).fetchone()['revoked_at']
+        assert revoked is not None
+        assert reader.extend_observed_detail_reads()==0
+        reader.save_snapshot([row],'Acceso ficticio a la lista restaurado')
+        assert reader.grant(row['opportunity_number'])['revoked_at'] is None
+        assert reader.extend_observed_detail_reads()==0
+        reader.save_detail(row['opportunity_number'],{'fields':{'name':'Persona ficticia'},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]}})
+        with reader.connect() as c:
+            c.execute("UPDATE user_permissions SET detail_checked_at=now()-interval '9 hours',detail_until=now()-interval '8 hours' WHERE principal=%s",(reader.principal,))
+            c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '9 hours' WHERE principal=%s",(reader.principal,))
+        assert reader.extend_observed_detail_reads()==0
+        print(json.dumps({'postgresql_integration':'passed','checks':75,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

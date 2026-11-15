@@ -75,7 +75,7 @@ class OracleReadStore:
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             if kind=='details_batch':
                 self.read_seconds=[]
-                self.batch_numbers=[r['opportunity_number'] for r in self.records if self.needs_detail(r['opportunity_number'])]
+                self.batch_numbers=[r['opportunity_number'] for r in self.records if self.needs_detail(r['opportunity_number']) or self.read_outcomes.get(r['opportunity_number'],{}).get('permission_refresh_required')]
                 self.batch_numbers.sort(key=lambda n:{'failed':1,'partial':2}.get(self.read_outcomes.get(n,{}).get('state'),0))
                 self.batch_done=set();self.batch_failed=set();self.batch_partial=set()
                 self.batch_inflight=set()

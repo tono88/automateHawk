@@ -41,17 +41,41 @@ class ScopedRepository(PostgresRepository):
         with self.connect() as c:
             for row in rows:
                 number=row['opportunity_number'];fields=self.observed_fields.get(number,list(row))
-                c.execute("""INSERT INTO user_permissions(principal,opportunity_number,basic_fields,read_until)
-                  VALUES(%s,%s,%s,now()+make_interval(mins => %s)) ON CONFLICT(principal,opportunity_number)
-                  DO UPDATE SET basic_fields=excluded.basic_fields,read_until=excluded.read_until,checked_at=now()""",(self.principal,number,Jsonb(fields),self.basic_minutes))
+                c.execute("""INSERT INTO user_permissions(principal,opportunity_number,basic_fields,read_until,basic_checked_at)
+                  VALUES(%s,%s,%s,now()+make_interval(mins => %s),now()) ON CONFLICT(principal,opportunity_number)
+                  DO UPDATE SET basic_fields=excluded.basic_fields,read_until=excluded.read_until,
+                  basic_checked_at=excluded.basic_checked_at,revoked_at=NULL,checked_at=now()""",(self.principal,number,Jsonb(fields),self.basic_minutes))
         self.observed_fields={};return result
     def reconcile_visible_inventory(self,numbers):
         """Expire this principal's missing grants; retain shared data and history."""
         with self.connect() as c:
-            c.execute("""UPDATE user_permissions SET read_until=now(),detail_until=now(),edit_until=now(),
+            c.execute("""UPDATE user_permissions SET read_until=now(),detail_until=now(),edit_until=now(),revoked_at=now(),
               detail_fields='[]'::jsonb,capabilities='{}'::jsonb,activities_visible=false
               WHERE principal=%s AND NOT(opportunity_number=ANY(%s::text[]))""",
               (self.principal,list(numbers)))
+    def extend_observed_detail_reads(self):
+        """Operator-only policy transition; never changes field scope or editing.
+
+        Requires a recent list observation and a completed per-user detail read
+        inside the configured window. There is deliberately no public API route.
+        """
+        with self.connect() as c:
+            changed=c.execute("""UPDATE user_permissions p
+              SET detail_until=p.detail_checked_at+make_interval(mins => %s)
+              FROM detail_read_progress r
+              WHERE p.principal=%s AND r.principal=p.principal AND r.opportunity_number=p.opportunity_number
+              AND r.state='completed' AND r.schema_version>=2
+              AND r.updated_at>=p.detail_checked_at-interval '1 minute'
+              AND p.read_until>now() AND p.revoked_at IS NULL
+              AND p.basic_checked_at>=now()-interval '1 hour' AND p.basic_checked_at<=now()
+              AND p.detail_fields<>'[]'::jsonb
+              AND p.detail_checked_at>=now()-make_interval(mins => %s) AND p.detail_checked_at<=now()
+              AND p.detail_until<p.detail_checked_at+make_interval(mins => %s)""",
+              (self.detail_minutes,self.principal,self.detail_minutes,self.detail_minutes)).rowcount
+            c.execute("INSERT INTO audit_events(actor,action,metadata) VALUES(%s,'read_window_policy_applied',%s)",
+              (self.principal,Jsonb({'read_minutes':self.detail_minutes,'changed_permissions':changed,
+                'observation_preserved':True,'field_scope_unchanged':True,'editing_unchanged':True})))
+        return changed
     def load(self):
         result=super().load();grants=self.grants();now=datetime.now(timezone.utc)
         result['records']=[{k:v for k,v in r.items() if k in grants[r['opportunity_number']]['basic_fields'] or k.startswith('_') or k=='opportunity_number'} for r in result['records'] if r['opportunity_number'] in grants]
@@ -111,6 +135,7 @@ class ScopedRepository(PostgresRepository):
     def read_progress(self):
         with self.connect() as c:
             rows=c.execute('''SELECT r.opportunity_number,r.state,r.attempts,r.error_code,r.schema_version,r.source_version,
+              (p.detail_until IS NULL OR p.detail_until<=now()) AS permission_refresh_required,
               (r.state='completed' AND (
                 r.updated_at<now()-interval '24 hours'
                 OR (r.source_version IS NOT NULL AND r.source_version<>o.version)

@@ -54,6 +54,8 @@ Al terminar todas las particiones verificadas de 2026, se vencen los permisos de
 
 ## Vigencias independientes
 
-La configuración conserva 60 minutos para la lista y 30 para detalles. Se preparan `HUB_LIST_GRANT_MINUTES` y `HUB_DETAIL_GRANT_MINUTES`, de 15 a 480 minutos, para una decisión explícita sobre la consulta durante la jornada. Un cambio de configuración se aplica únicamente a observaciones nuevas en Oracle; no renueva retrospectivamente permisos vencidos.
+La configuración compartida conserva 60 minutos para la lista y 30 para detalles. `HUB_LIST_GRANT_MINUTES` y `HUB_DETAIL_GRANT_MINUTES` admiten de 15 a 480 minutos. Para este despliegue se autorizó una jornada de ocho horas de consulta, con sesión válida y permisos separados por usuario. La configuración local utiliza 480 minutos; la edición mantiene su vigencia independiente.
 
 La edición conserva un vencimiento separado de 30 minutos, además de la verificación del control y del valor actual en Oracle al guardar. Una lectura de mayor duración no extiende ese permiso. Renovar la lista tampoco cambia la fecha de comprobación del detalle. La migración de permisos anteriores conserva su vencimiento original y reconstruye su observación restando los 30 minutos de la política previa; no usa una renovación posterior de la lista como prueba de acceso al detalle.
+
+La transición autorizada de política permite ampliar lecturas ya comprobadas dentro de las ocho horas: primero se renueva la cartera en Oracle; después, una operación interna toma la hora original del detalle y calcula su vencimiento desde esa observación. Exige una lectura completa por el mismo usuario, una consulta reciente de la lista y ausencia de revocación. No cambia campos autorizados, capacidades de edición ni fechas de comprobación. Los accesos revocados y las observaciones anteriores al plazo quedan excluidos. La operación deja auditoría y no tiene una ruta pública en el portal.

@@ -190,6 +190,13 @@ class ReadModelTests(unittest.TestCase):
         self.s.job={'kind':'details_batch','state':'paused'}
         self.assertIsNone(self.s.scheduler_tick())
 
+    def test_manual_batch_can_renew_expired_permissions_for_an_extracted_record(self):
+        self.s.ingest(payload());number='SYNTHETIC-001'
+        self.s.ingest_detail({'opportunity_number':number,'schema_version':2,'fields':{'cycle':'2271'}})
+        self.s.read_outcomes[number]['permission_refresh_required']=True
+        self.assertEqual(self.s.extraction_progress()['completed'],1)
+        self.assertEqual(self.s.request('details_batch')['total'],1)
+
 class ReadHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls): test_lab.HttpTests.setUpClass.__func__(cls)

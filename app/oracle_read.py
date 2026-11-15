@@ -297,8 +297,10 @@ class OracleReadStore:
             if self.retry_after>monotonic():return None
             if not self.settings['enabled'] or not self.worker_seen or monotonic()-self.worker_seen>=90:return None
             if self.job and self.job['state'] in ('pending','running','paused'):return None
-            if any(r.get('needs_refresh') for r in self.read_outcomes.values()):return self.request('details_batch')
             if self.listing_coverage and not self.listing_coverage.get('complete'):return self.request()
+            new_details=any(not self.read_outcomes.get(r['opportunity_number'],{}).get('state')
+                and self.needs_detail(r['opportunity_number']) for r in self.records)
+            if new_details or any(r.get('needs_refresh') for r in self.read_outcomes.values()):return self.request('details_batch')
             observed=(self.listing_coverage or {}).get('finished_at') or self.loaded_at
             if observed:
                 elapsed=(datetime.now(timezone.utc)-datetime.fromisoformat(observed)).total_seconds()

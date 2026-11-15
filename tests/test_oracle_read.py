@@ -206,9 +206,21 @@ class ReadModelTests(unittest.TestCase):
 
     def test_incomplete_own_inventory_is_resumed_even_with_fresh_global_data(self):
         from datetime import datetime,timezone
+        self.s.ingest(payload())
         self.s.settings['enabled']=True;self.s.heartbeat();self.s.loaded_at=datetime.now(timezone.utc).isoformat()
         self.s.listing_coverage={'complete':False,'finished_at':None}
         self.assertEqual(self.s.scheduler_tick()['kind'],'opportunities')
+
+    def test_periodic_new_opportunities_get_details_after_the_listing(self):
+        self.s.ingest(payload());self.s.settings['enabled']=True;self.s.heartbeat()
+        job=self.s.scheduler_tick()
+        self.assertEqual(job['kind'],'details_batch');self.assertEqual(job['total'],1)
+
+    def test_periodic_refresh_does_not_loop_on_records_requiring_review(self):
+        for state in ('partial','failed'):
+            store=OracleReadStore();store.ingest(payload());store.settings['enabled']=True;store.heartbeat()
+            store.read_outcomes['SYNTHETIC-001']={'state':state}
+            with self.subTest(state=state):self.assertIsNone(store.scheduler_tick())
 
 class ReadHttpTests(unittest.TestCase):
     @classmethod

@@ -5,7 +5,10 @@ from secrets import token_urlsafe
 from threading import RLock
 from time import monotonic
 from .domain import ValidationError, ConflictError
+import os
 from .catalog import DETAIL_FIELDS, EDIT_FIELDS, validate_change
+
+EDIT_DETAIL_MAX_AGE=int(os.environ.get('HUB_EDIT_DETAIL_MAX_AGE_MINUTES','480'))*60
 
 FIELDS = ('opportunity_number','first_name','last_name','name','account','close_date',
           'probability','stage','status','segment','contact_name','owner','phone',
@@ -282,7 +285,9 @@ class OracleReadStore:
         detail=self.details.get(number)
         if not detail or not detail.get('capabilities',{}).get(field):raise PermissionError()
         loaded=datetime.fromisoformat(detail['loaded_at'])
-        if (datetime.now(timezone.utc)-loaded).total_seconds()>1800:raise ConflictError('Vuelve a consultar los permisos del detalle antes de editar.')
+        # Oracle re-checks permission and the current value on the live form before saving;
+        # this only bounds how old the observed permission may be.
+        if (datetime.now(timezone.utc)-loaded).total_seconds()>EDIT_DETAIL_MAX_AGE:raise ConflictError('Vuelve a consultar el detalle en Oracle antes de editar este campo.')
         return self.repository.propose(number,field,value,body.get('version'),self.actor)
 
     def save_settings(self,body):

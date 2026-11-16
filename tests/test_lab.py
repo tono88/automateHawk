@@ -68,7 +68,7 @@ class HttpTests(unittest.TestCase):
             with urlopen(req) as r: return r.status,r.read(),r.headers
         except HTTPError as r: return r.code,r.read(),r.headers
     def test_health_and_assets(self):
-        for path in ['/','/app.js','/style.css','/api/snapshot','/health']:
+        for path in ['/','/app.js','/style.css','/trace.js','/api/snapshot','/health','/api/oracle/trace','/api/oracle/catalog']:
             status,body,headers=self.request(path)
             self.assertEqual(status,200);self.assertTrue(body)
             self.assertEqual(headers['Cache-Control'],'no-store')
@@ -84,6 +84,12 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request('/health',headers={'Host':'evil.invalid'})[0],403)
         self.assertEqual(self.request('/../domain.py')[0],404)
         self.assertEqual(self.request('/api/oracle','POST',{'data':{}})[0],404)
+    def test_trace_dashboard_and_catalog_shape(self):
+        d=json.loads(self.request('/api/oracle/trace')[1])
+        self.assertTrue({'kpis','funnel','checks','rows','dimensions'}<=set(d))
+        catalog=json.loads(self.request('/api/oracle/catalog')[1])
+        self.assertEqual(set(catalog['edit_kinds']),set(catalog['edit_fields']))
+        self.assertEqual(self.request('/api/oracle/trace/opportunity?number=NONE')[0],404)
     def test_invalid_payload(self):
         self.assertEqual(self.request('/api/tasks','POST',[])[0],400)
         self.assertEqual(self.request('/api/tasks','POST',{'data':{}})[0],400)

@@ -24,20 +24,37 @@ class SessionTests(unittest.TestCase):
         a=self.auth();a.clock=lambda:1010;a.rpc.side_effect=AuthError('session')
         with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
         self.assertFalse(a.sessions)
-    def test_background_batch_does_not_unlock_expired_interactive_session(self):
+    def test_running_sync_keeps_the_session_open_until_it_finishes(self):
         from threading import Lock
-        a=self.auth();s=a.sessions['synthetic-token'];s['task_lock']=Lock()
+        a=self.auth();s=a.sessions['synthetic-token'];s['task_lock']=Lock();s['lane_locks']=[Lock(),Lock()]
         s['store'].ingest({'records':[{'opportunity_number':'SYNTHETIC-001'}],'scope':'Synthetic','partial':True})
         s['store'].request('details_batch');job=s['store'].claim()
-        s.update(batch_job=job['id'],batch_deadline=3000)
+        s.update(batch_job=job['id'],batch_deadline=900+28800)
         a.clock=lambda:2000
-        with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
-        self.assertIn('synthetic-token',a.sessions)
+        self.assertIs(a.resolve('hub_session=synthetic-token'),s)
+        self.assertEqual(s['seen'],2000)
         a.session_rpc(s,{'kind':'detail','number':'SYNTHETIC-001'})
-        for body in ({'kind':'write'},{'kind':'detail','number':'OUTSIDE-BATCH'}):
-            with self.assertRaises(AuthError):a.session_rpc(s,body)
-        a.clock=lambda:3001
-        with self.assertRaises(AuthError):a.session_rpc(s,{'kind':'detail','number':'SYNTHETIC-001'})
+        # Writes are accepted during the sync; they hold every read lane while they run.
+        a.session_rpc(s,{'kind':'write'})
+        self.assertFalse(any(l.locked() for l in s['lane_locks']+[s['task_lock']]))
+        s['store'].job.update(state='completed')
+        a.clock=lambda:2000+901
+        with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
+        self.assertNotIn('synthetic-token',a.sessions)
+    def test_sweep_keeps_syncing_sessions_even_without_an_open_tab(self):
+        a=self.auth();s=a.sessions['synthetic-token']
+        s['store'].job={'kind':'details_batch','state':'running','id':'synthetic-job'}
+        a.clock=lambda:5000;a.sweep()
+        self.assertIn('synthetic-token',a.sessions);self.assertEqual(s['seen'],5000)
+        s['store'].job['state']='paused';a.clock=lambda:5000+901;a.sweep()
+        self.assertNotIn('synthetic-token',a.sessions)
+    def test_slow_worker_does_not_log_out_but_lost_context_does(self):
+        a=self.auth();a.clock=lambda:1010;a.rpc.side_effect=AuthError('unavailable')
+        self.assertIs(a.resolve('hub_session=synthetic-token'),a.sessions['synthetic-token'])
+        a.clock=lambda:990+301
+        a.sessions['synthetic-token']['seen']=1290
+        with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
+        self.assertFalse(a.sessions)
     def test_logout_revokes_authorized_batch_too(self):
         a=self.auth();s=a.sessions['synthetic-token']
         s['store'].job={'kind':'details_batch','state':'running','id':'synthetic-job'}
@@ -113,6 +130,12 @@ class WriteQueueTests(unittest.TestCase):
         a,s,r=self.setup_auth(reconcile=True);a.session_rpc.return_value={'fields':{'name':'Nuevo ficticio'}}
         a.submit_write(s,'synthetic-change',reconcile=True)
         self.assertEqual(a.session_rpc.call_args.args[1]['kind'],'detail');r.confirm_write.assert_called_once()
+
+    def test_write_is_accepted_while_a_sync_is_running(self):
+        a,s,r=self.setup_auth();s['store'].job={'kind':'details_batch','state':'running','id':'synthetic-job'}
+        s.update(batch_job='synthetic-job',batch_deadline=5000,created=900)
+        a.submit_write(s,'synthetic-change')
+        r.confirm_write.assert_called_once();self.assertEqual(a.session_rpc.call_args.args[1]['kind'],'write')
 
 class AuthHttpTests(unittest.TestCase):
     @classmethod

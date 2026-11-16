@@ -180,7 +180,25 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
             c.execute("UPDATE user_permissions SET detail_checked_at=now()-interval '9 hours',detail_until=now()-interval '8 hours' WHERE principal=%s",(reader.principal,))
             c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '9 hours' WHERE principal=%s",(reader.principal,))
         assert reader.extend_observed_detail_reads()==0
-        print(json.dumps({'postgresql_integration':'passed','checks':75,'data':'synthetic isolated database'}))
+        # Detail-only fields (tests, financial aid) are edited and traced like list fields.
+        editor=ScopedRepository(dsn,'synthetic-detail-editor');editor.basic_minutes=editor.detail_minutes=editor.edit_minutes=240
+        editor.save_snapshot([row],'Acceso ficticio para edición de detalle')
+        editor.save_detail(row['opportunity_number'],{'fields':{'name':'Persona ficticia','test_call':'No Aplica'},'capabilities':{'test_call':True},'activities':{'queried':True,'rows':[]}})
+        current=editor.load()['records'][0]
+        proposal=editor.propose(row['opportunity_number'],'test_call','Convocatoria ficticia',current['_version'],editor.principal)
+        pending=next(c for c in editor.changes() if c['id']==proposal['id'])
+        assert pending['old_value']=='No Aplica',pending
+        editor.write_state(proposal['id'],editor.principal,'queued');editor.start_write(proposal['id'],editor.principal)
+        editor.confirm_write(proposal['id'],editor.principal,{'fields':{'name':'Persona ficticia','test_call':'Convocatoria ficticia'},'capabilities':{'test_call':True},'activities':{'queried':False,'rows':[]}})
+        assert editor.load()['details'][row['opportunity_number']]['fields']['test_call']=='Convocatoria ficticia'
+        assert 'test_call' not in editor.load()['records'][0]
+        trace=editor.opportunity_trace(row['opportunity_number'])
+        assert trace['versions'] and any(e['action']=='oracle_write_verified' and e['field']=='test_call' for e in trace['events'])
+        activity=editor.trace_activity([row['opportunity_number'],'NOT-VISIBLE'])
+        assert activity['recent'] and all(e['opportunity_number']==row['opportunity_number'] for e in activity['recent'])
+        try:ScopedRepository(dsn,'synthetic-stranger').opportunity_trace(row['opportunity_number']);raise AssertionError('Trace without permission')
+        except PermissionError:pass
+        print(json.dumps({'postgresql_integration':'passed','checks':83,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

@@ -4,17 +4,22 @@ import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit,unquote
+from urllib.parse import urlsplit,unquote,parse_qs
 from threading import Thread,Event
 from time import monotonic
-from .auth import ScreenAuth, AuthError
+from .auth import ScreenAuth, AuthError, IDLE_SECONDS
 from .domain import DemoStore, ValidationError, ConflictError
 from .oracle_read import OracleReadStore
 from .local_activities import SCHEMA as ACTIVITY_SCHEMA, validate as validate_activity
-from .catalog import DETAIL_FIELDS,VIEWS,EDIT_FIELDS
+from .catalog import DETAIL_FIELDS,VIEWS,EDIT_FIELDS,EDIT_KINDS,VERIFIED_EDIT_FIELDS
+from . import trace as TRACE
 from .persistence import database_dsn,PostgresRepository
 
 STATIC=Path(__file__).parent/'static'
+# Hostnames the portal answers to. Loopback always; add a LAN name or IP (or the name
+# behind a reverse proxy) with HUB_ALLOWED_HOSTS=portal.unis.local,10.0.0.5
+ALLOWED_HOSTS={'localhost','127.0.0.1','[::1]','::1'}|{h.strip().lower() for h in os.environ.get('HUB_ALLOWED_HOSTS','').split(',') if h.strip()}
+COOKIE_FLAGS='; Path=/; HttpOnly; SameSite=Strict'+('; Secure' if os.environ.get('HUB_COOKIE_SECURE','')=='1' else '')
 STORE=DemoStore()
 ORACLE=OracleReadStore()
 AUTH=None
@@ -48,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def allowed(self):
-        try: return urlsplit('http://'+self.headers.get('Host','')).hostname in ['localhost','127.0.0.1','[::1]','::1']
+        try: return urlsplit('http://'+self.headers.get('Host','')).hostname in ALLOWED_HOSTS
         except ValueError: return False
 
     def do_GET(self):
@@ -74,11 +79,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200,{'snapshot':self.oracle.snapshot(),
                 'changes':repo.changes() if repo else [],
                 'activities':repo.local_activities() if repo else [],'schemas':ACTIVITY_SCHEMA})
-        if path=='/api/oracle/catalog':return self.respond(200,{'views':VIEWS,'fields':{k:{'label':v[0],'module':v[1]} for k,v in DETAIL_FIELDS.items()},'edit_fields':sorted(EDIT_FIELDS)})
+        if path=='/api/oracle/catalog':return self.respond(200,{'views':VIEWS,'fields':{k:{'label':v[0],'module':v[1]} for k,v in DETAIL_FIELDS.items()},'edit_fields':sorted(EDIT_FIELDS),'edit_kinds':{k:EDIT_KINDS[k] for k in EDIT_FIELDS},'verified_edit_fields':sorted(VERIFIED_EDIT_FIELDS&EDIT_FIELDS)})
+        if path=='/api/oracle/trace':
+            snapshot=self.oracle.snapshot();repo=self.oracle.repository
+            changes=repo.changes() if repo else []
+            activity=repo.trace_activity([r['opportunity_number'] for r in snapshot['records']]) if repo and hasattr(repo,'trace_activity') else None
+            return self.respond(200,TRACE.dashboard(snapshot,changes,activity))
+        if path=='/api/oracle/trace/opportunity':
+            number=(parse_qs(urlsplit(self.path).query).get('number') or [''])[0]
+            repo=self.oracle.repository;snapshot=self.oracle.snapshot()
+            record=next((r for r in snapshot['records'] if r['opportunity_number']==number),None)
+            if not record or not repo or not hasattr(repo,'opportunity_trace'):return self.respond(404,{'error':'Oportunidad no disponible con tus permisos.'})
+            try:history=repo.opportunity_trace(number)
+            except PermissionError:return self.respond(403,{'error':'Tus permisos vigentes no incluyen esta oportunidad.'})
+            return self.respond(200,{'number':number,'record':record,'detail':snapshot['details'].get(number),
+                'read_state':snapshot['read_states'].get(number,{}),'timeline':TRACE.diff_versions(history['versions']),
+                'events':history['events'],'first_seen':history['record'].get('first_seen'),
+                'changes':[c for c in (repo.changes() or []) if c['opportunity_number']==number]})
         if path=='/api/oracle/changes':return self.respond(200,{'changes':self.oracle.repository.changes() if self.oracle.repository else []})
         if path=='/api/oracle/activities':return self.respond(200,{'schemas':ACTIVITY_SCHEMA,'activities':self.oracle.repository.local_activities() if self.oracle.repository else []})
         if path=='/api/oracle/batch':return self.respond(200,self.oracle.batch())
-        routes={'/unis-crest.png':('unis-crest.png','image/png'),'/admissions-views.js':('admissions-views.js','text/javascript; charset=utf-8'),'/table-tools.js':('table-tools.js','text/javascript; charset=utf-8'),'/auth.js':('auth.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/live.js':('operations.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
+        routes={'/unis-crest.png':('unis-crest.png','image/png'),'/admissions-views.js':('admissions-views.js','text/javascript; charset=utf-8'),'/table-tools.js':('table-tools.js','text/javascript; charset=utf-8'),'/auth.js':('auth.js','text/javascript; charset=utf-8'),'/':('index.html','text/html; charset=utf-8'),'/app.js':('app.js','text/javascript; charset=utf-8'),'/live.js':('operations.js','text/javascript; charset=utf-8'),'/trace.js':('trace.js','text/javascript; charset=utf-8'),'/style.css':('style.css','text/css; charset=utf-8')}
         if path not in routes: return self.respond(404,{'error':'Recurso inexistente.'})
         filename,kind=routes[path]
         self.respond(200,(STATIC/filename).read_bytes(),kind)
@@ -86,8 +107,9 @@ class Handler(BaseHTTPRequestHandler):
     def mutate(self):
         if not self.allowed(): return self.respond(403,{'error':'Solo acceso local.'})
         origin=self.headers.get('Origin')
-        if AUTH and origin!='http://'+self.headers.get('Host',''):return self.respond(403,{'error':'Origen no permitido.'})
-        if origin and (urlsplit(origin).netloc!=self.headers.get('Host') or urlsplit(origin).scheme!='http'):
+        host=self.headers.get('Host','')
+        if AUTH and origin not in ('http://'+host,'https://'+host):return self.respond(403,{'error':'Origen no permitido.'})
+        if origin and (urlsplit(origin).netloc!=host or urlsplit(origin).scheme not in ('http','https')):
             return self.respond(403,{'error':'Origen no permitido.'})
         if self.headers.get('Content-Type','').split(';')[0]!='application/json': return self.respond(415,{'error':'Se requiere JSON.'})
         try:
@@ -102,13 +124,13 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     AUTH.logout(self.headers.get('Cookie'))
                     token,session=AUTH.login(body)
-                    self.auth_cookie='hub_session='+token+'; Path=/; HttpOnly; SameSite=Strict'
+                    self.auth_cookie='hub_session='+token+COOKIE_FLAGS
                     return self.respond(200,{'authenticated':True,'display':session['display']})
                 except AuthError as error:
                     messages={'capacity':'Hay muchas sesiones activas. Intenta más tarde.','rate':'Se alcanzó el límite de intentos. Espera 15 minutos.','credentials-or-challenge':'Oracle no confirmó el acceso. Revisa las credenciales; si solicita verificación adicional, debe resolverse en Oracle.','unavailable':'El servicio de acceso no está disponible. Intenta más tarde.','login-layout':'No se reconoció el formulario de acceso de Oracle.','login-destination':'Oracle redirigió a un destino que requiere validación.'}
                     return self.respond(401,{'error':messages.get(error.code,'No se pudo confirmar la sesión de Oracle.')})
             if route=='/api/auth/logout' and AUTH:
-                AUTH.logout(self.headers.get('Cookie'));self.auth_cookie='hub_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0'
+                AUTH.logout(self.headers.get('Cookie'));self.auth_cookie='hub_session='+COOKIE_FLAGS+'; Max-Age=0'
                 return self.respond(200,{'authenticated':False})
             if not self.authenticate():return
             if AUTH:self.session['seen']=monotonic()
@@ -191,7 +213,7 @@ def main():
                     AUTH.sweep()
                     with AUTH.lock:sessions=list(AUTH.sessions.values())
                     for session in sessions:
-                        if monotonic()-session['seen']<900 and session['store'].scheduler_tick():AUTH.execute(session)
+                        if monotonic()-session['seen']<IDLE_SECONDS and session['store'].scheduler_tick():AUTH.execute(session)
                 else:ORACLE.scheduler_tick()
             except Exception:pass
     Thread(target=schedule,daemon=True).start()

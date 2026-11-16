@@ -2,7 +2,7 @@
 window.UnisOracleLive = (() => {
   let state, catalog, changes = [], root, view = 'base', query = '', cycle = '', advisor = '',
     stage = '', oracleStatus = '', segment = '', faculty = '', testDate = '', page = 1, selected = null, module = 'general',
-    inline = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, cohort = '', detailFilter = '';
+    inline = null, drawerEdit = null, lastJob = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, cohort = '', detailFilter = '';
   const labels = {segment:'Segmento',name:'Nombre de oportunidad',owner:'Asesor',stage:'Etapa',probability:'Probabilidad',close_date:'Fecha de cierre'};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const time = value => value ? new Date(value).toLocaleString('es-GT', {timeZone:'America/Guatemala'}) : 'Sin consultar';
@@ -35,7 +35,7 @@ window.UnisOracleLive = (() => {
     if(refreshFlight)return refreshFlight;
     const work=(async()=>{
       const workspace=await request('/api/oracle/workspace');
-      state=workspace.snapshot;changes=workspace.changes;activities=workspace.activities;activitySchemas=workspace.schemas;
+      state=workspace.snapshot;lastJob=state.job;changes=workspace.changes;activities=workspace.activities;activitySchemas=workspace.schemas;
       if (!catalog) catalog = await request('/api/oracle/catalog');
     })();
     refreshFlight=work;
@@ -109,18 +109,37 @@ window.UnisOracleLive = (() => {
   function cell(row,key,section) {
     const number=row.opportunity_number;
     if(inline?.number===number&&inline.key===key) {
-      const current=value(row,key), type=key==='probability'?'number':key==='close_date'?'date':'text';
-      const control=key==='stage'?`<select name="value" aria-label="Nuevo valor de Etapa">${['01 - Interesado','02 - Inscrito a prueba','03 - Presente a prueba: resolución','04 - Perdida','05 - Matriculado','06 - Inscrito'].map(s=>`<option ${s===current?'selected':''}>${s}</option>`).join('')}</select>`:`<input name="value" aria-label="Nuevo valor de ${labels[key]}" type="${type}" value="${esc(type==='date'?isoDate(current):current)}" required>`;
-      return `<form class="inline-editor" data-inline-form="${esc(number)}" data-field="${key}">${control}<small>Se enviará a Oracle con tu sesión.</small><button class="primary tiny-button">Guardar en Oracle</button><button type="button" data-inline-cancel class="tiny-button">×</button></form>`;
+      return `<form class="inline-editor" data-inline-form="${esc(number)}" data-field="${key}">${editorControl(row,key)}<small>Se enviará a Oracle con tu sesión.</small><button class="primary tiny-button">Guardar en Oracle</button><button type="button" data-inline-cancel class="tiny-button">×</button></form>`;
     }
     let text=value(row,key)||'—';
     if(key==='activities'){const d=state.details?.[number];text=d?.activities?.queried?`${d.activities.rows.length} actividades visibles`:'—';}
     const change=pending(number,key);
-    return `<button class="cell-link" title="${esc(value(row,key)?'Valor recuperado de Oracle':fieldHint(row,key))}" data-detail="${esc(number)}" data-module="${section}">${esc(text)}</button>${canEdit(row,key)?`<button class="pencil" aria-label="Editar ${labels[key]} en la lista" data-inline="${esc(number)}" data-field="${key}">✎</button>`:''}${change?`<span class="record-id pending-label">Por confirmar: ${esc(change.new_value)}</span>`:''}`;
+    return `<button class="cell-link" title="${esc(value(row,key)?'Valor recuperado de Oracle':fieldHint(row,key))}" data-detail="${esc(number)}" data-module="${section}">${esc(text)}</button>${canEdit(row,key)?`<button class="pencil" aria-label="Editar ${esc(fieldLabel(key))} en la lista" data-inline="${esc(number)}" data-field="${key}">✎</button>`:''}${change?`<span class="record-id pending-label">Por confirmar: ${esc(change.new_value)}</span>`:''}`;
+  }
+  const STAGES=['01 - Interesado','02 - Inscrito a prueba','03 - Presente a prueba: resolución','04 - Perdida','05 - Matriculado','06 - Inscrito'];
+  const fieldLabel=key=>labels[key]||catalog?.fields?.[key]?.label||key;
+  function observedValues(key) {
+    const values=new Set();
+    for(const r of state.records){const v=r[key]??state.details?.[r.opportunity_number]?.fields?.[key];if(v)values.add(String(v));if(values.size>200)break;}
+    return [...values].sort((a,b)=>a.localeCompare(b,'es'));
+  }
+  /** Input for a field according to its kind; choice lists suggest values observed in Oracle. */
+  function editorControl(row,key) {
+    const kind=catalog.edit_kinds?.[key]||'text', current=String(value(row,key)??'');
+    if(key==='stage')return `<select name="value" aria-label="Nuevo valor de ${esc(fieldLabel(key))}">${STAGES.map(s=>`<option ${s===current?'selected':''}>${s}</option>`).join('')}</select>`;
+    if(kind==='date')return `<input name="value" type="date" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(isoDate(current))}">`;
+    if(kind==='number')return `<input name="value" type="text" inputmode="decimal" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(current)}" ${['name','probability'].includes(key)?'required':''}>`;
+    if(kind==='choice'){const list='dl-'+key;return `<input name="value" list="${list}" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(current)}" placeholder="Valor exacto de la lista de Oracle"><datalist id="${list}">${observedValues(key).map(v=>`<option value="${esc(v)}">`).join('')}</datalist>`;}
+    if(key==='financial_comments')return `<textarea name="value" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" maxlength="2000">${esc(current)}</textarea>`;
+    return `<input name="value" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(current)}" maxlength="300" ${key==='name'?'required':''}>`;
+  }
+  async function submitChange(number,key,form) {
+    const row=state.records.find(r=>r.opportunity_number===number);
+    await request('/api/oracle/changes',{opportunity_number:number,field:key,value:form.elements.value.value,version:row._version});
   }
   function isoDate(raw) {
     if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;
-    const m=raw.match(/^(\d{2})\/(\d{2})\/(\d{2,4})$/);return m?`${m[3].length===2?'20'+m[3]:m[3]}-${m[2]}-${m[1]}`:'';
+    const m=String(raw||'').match(/^(\d{2})\/(\d{2})\/(\d{2,4})$/);return m?`${m[3].length===2?'20'+m[3]:m[3]}-${m[2]}-${m[1]}`:'';
   }
   function coverageNote(filtered){
     const visible=filtered.filter(r=>state.details?.[r.opportunity_number]).length;
@@ -172,9 +191,9 @@ window.UnisOracleLive = (() => {
     root.querySelectorAll('[data-inline]').forEach(button=>button.onclick=()=>{inline={number:button.dataset.inline,key:button.dataset.field};error='';draw();});
     root.querySelectorAll('[data-inline-cancel]').forEach(button=>button.onclick=()=>{inline=null;draw();});
     root.querySelectorAll('[data-inline-form]').forEach(form=>form.onsubmit=async event=>{
-      event.preventDefault();const row=state.records.find(r=>r.opportunity_number===form.dataset.inlineForm);
+      event.preventDefault();
       const submit=form.querySelector('button');if(submit.disabled)return;submit.disabled=true;
-      try {await request('/api/oracle/changes',{opportunity_number:row.opportunity_number,field:form.dataset.field,value:form.elements.value.value,version:row._version});inline=null;await refresh();error='Cambio en cola. Se enviará con tu sesión y se verificará en Oracle.';draw();}catch(e){error=e.message;draw();}
+      try {await submitChange(form.dataset.inlineForm,form.dataset.field,form);inline=null;await refresh();error='Cambio en cola. Se enviará con tu sesión y se verificará en Oracle.';draw();}catch(e){error=e.message;draw();}
     });
   }
   function ensureDrawer() {
@@ -182,7 +201,7 @@ window.UnisOracleLive = (() => {
     dialog=document.createElement('dialog');dialog.id='crm-detail';dialog.className='crm-drawer';document.body.append(dialog);return dialog;
   }
   function openDetail(number,section='general') {
-    selected=number;module=section;drawDetail();const dialog=ensureDrawer();if(!dialog.open)dialog.showModal();
+    selected=number;module=section;drawerEdit=null;drawDetail();const dialog=ensureDrawer();if(!dialog.open)dialog.showModal();
   }
   function drawDetail() {
     const row=state.records.find(r=>r.opportunity_number===selected),detail=state.details?.[selected];if(!row)return;
@@ -192,15 +211,25 @@ window.UnisOracleLive = (() => {
     dialog.innerHTML=`<div class="dialog-head"><div><span class="eyebrow">DETALLE DE ORACLE · COPIA LOCAL</span><h2>${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</h2><p class="subtle">${esc(selected)} · ${esc(time(detail?.loaded_at))}</p></div><button id="crm-close" class="icon-button" aria-label="Cerrar detalle">×</button></div><div class="ops-tabs">${tabs.map(([id,title])=>`<button data-section="${id}" class="${id===module?'selected':''}">${title}</button>`).join('')}</div><div class="notice">${detail?'Permisos y valores observados en la cuenta del trabajador.':'Aún no se ha consultado el detalle de esta oportunidad.'} Los cambios propuestos quedan separados del valor confirmado.</div>
       ${module==='activities'?activityPanel(detail)+localActivityPanel(selected):`<div class="detail-grid">${fields.map(([key,definition])=>{
         const available=key in row||key in (detail?.fields||{});let text=available?(value(row,key)||'Sin valor registrado en Oracle'):fieldHint(row,key);
-        const permission=detail?.capabilities?.[key];return `<div class="detail-field"><span>${esc(key==='name'?'Nombre de la oportunidad':definition.label)}</span><strong>${esc(text)}</strong><small>${permission===true?'Control habilitado en la consulta de Oracle':permission===false?'Solo lectura en Oracle':'Permiso pendiente de validación'}</small></div>`;
+        const permission=detail?.capabilities?.[key],change=pending(selected,key);
+        if(drawerEdit===key)return `<form class="detail-field drawer-editor" data-drawer-form="${key}"><span>${esc(key==='name'?'Nombre de la oportunidad':definition.label)}</span>${editorControl(row,key)}<p class="error" id="drawer-error" role="alert"></p><div class="drawer-editor-actions"><button type="button" class="tiny-button" data-drawer-cancel>Cancelar</button><button class="primary tiny-button">Guardar en Oracle</button></div><small>Antes de guardar se comprueba el valor actual en Oracle; después se relee el registro.</small></form>`;
+        return `<div class="detail-field"><span>${esc(key==='name'?'Nombre de la oportunidad':definition.label)}${canEdit(row,key)?` <button class="pencil" data-drawer-edit="${key}" aria-label="Editar ${esc(definition.label)}">✎</button>`:''}</span><strong>${esc(text)}</strong>${change?`<small class="pending-label">Por confirmar en Oracle: ${esc(change.new_value||'(vacío)')}</small>`:''}<small>${permission===true?(catalog.edit_fields.includes(key)?'Editable desde el portal':'Control habilitado en Oracle; edición no habilitada en el portal'):permission===false?'Solo lectura en Oracle':'Permiso pendiente de validación'}</small></div>`;
       }).join('')||'<p class="subtle">Este módulo todavía no tiene campos mapeados.</p>'}</div>`}
       ${module==='payments'?'<p class="notice">Importe, reserva de cupo y razón de retraso no acreditan un pago. El recibo, transacción y confirmación de pago aún requieren un mapeo específico.</p>':''}
       ${module==='advisor'?'<p class="subtle">Se muestra la asignación observada. El perfil, equipo y permisos del asesor se ampliarán al validar su módulo específico.</p>':''}
       <div class="dialog-actions"><span></span><button id="crm-reload" class="primary" ${!state.worker_online||busy?'disabled':''}>Consultar detalle en Oracle</button></div>`;
     bindActivities(dialog);
     dialog.querySelector('#crm-close').onclick=()=>dialog.close();
-    dialog.querySelectorAll('[data-section]').forEach(button=>button.onclick=()=>{module=button.dataset.section;drawDetail();});
+    dialog.querySelectorAll('[data-section]').forEach(button=>button.onclick=()=>{module=button.dataset.section;drawerEdit=null;drawDetail();});
     dialog.querySelector('#crm-reload').onclick=()=>enqueue('detail',selected);
+    dialog.querySelectorAll('[data-drawer-edit]').forEach(button=>button.onclick=()=>{drawerEdit=button.dataset.drawerEdit;drawDetail();dialog.querySelector('[data-drawer-form] [name=value]')?.focus();});
+    dialog.querySelectorAll('[data-drawer-cancel]').forEach(button=>button.onclick=()=>{drawerEdit=null;drawDetail();});
+    dialog.querySelectorAll('[data-drawer-form]').forEach(form=>form.onsubmit=async event=>{
+      event.preventDefault();const submit=form.querySelector('button.primary');if(submit.disabled)return;submit.disabled=true;
+      try{await submitChange(selected,form.dataset.drawerForm,form);drawerEdit=null;await refresh();error='Cambio en cola. Se enviará con tu sesión y se verificará en Oracle.';drawDetail();draw();}
+      catch(e){form.querySelector('#drawer-error').textContent=e.message;submit.disabled=false;}
+    });
+    dialog.onclose=()=>{drawerEdit=null;};
   }
   function activityPanel(detail) {
     if(!detail?.activities?.queried)return '<div class="empty">Actualiza este detalle para cargar las citas y tareas vinculadas.</div>';
@@ -251,7 +280,7 @@ window.UnisOracleLive = (() => {
   function queueView() {
     const titles={pending_validation:'Pendiente',queued:'En cola',applying:'Guardando en Oracle',uncertain:'Verificación requerida',failed:'No aplicado',conflict:'Conflicto',cancelled:'Cancelado',confirmed:'Confirmado en Oracle'};
     const reasons={permission:'Oracle no habilita este campo.',conflict:'El valor cambió en Oracle.',validation:'Oracle no aceptó el valor en el formulario.','side-effects':'Oracle propuso otros cambios; requiere revisión.','write-not-started':'No se inició el guardado.',session:'La sesión terminó.',unavailable:'No se pudo determinar el resultado.','server-restarted':'Se reinició el servicio; verifica el resultado.','reconciled-different':'Oracle tiene un valor diferente.',uncertain:'El resultado debe verificarse antes de reintentar.'};
-    return `<section class="table-panel"><div class="table-toolbar"><h2>Cambios y confirmaciones de Oracle</h2></div><div class="notice">Escritor piloto: la prueba institucional de guardado real sigue pendiente. Guardar en la lista envía el cambio con tu sesión. El valor confirmado se actualiza solo al releer Oracle. Un resultado incierto no se reintenta automáticamente. Citas, seguimientos e informes continúan como formularios locales.</div><div class="table-wrap"><table><thead><tr><th>OPORTUNIDAD</th><th>CAMPO</th><th>VALOR ANTERIOR</th><th>CAMBIO SOLICITADO</th><th>ESTADO</th><th>ACCIÓN</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(c.opportunity_number)}</td><td>${esc(labels[c.field]||c.field)}</td><td>${esc(c.old_value)}</td><td>${esc(c.new_value)}</td><td>${badge(titles[c.state]||c.state,c.state==='confirmed'?'green':['uncertain','failed','conflict'].includes(c.state)?'orange':'gray')}<span class="record-id">${esc(reasons[c.result_code]||'')}</span></td><td>${state.can_propose&&c.state==='uncertain'?`<button class="tiny-button" data-reconcile-change="${esc(c.id)}">Verificar en Oracle</button>`:''}${state.can_propose&&['pending_validation','conflict'].includes(c.state)?`<button class="tiny-button" data-cancel-change="${esc(c.id)}">Cancelar</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay cambios registrados con tu usuario.</td></tr>'}</tbody></table></div></section>`;
+    return `<section class="table-panel"><div class="table-toolbar"><h2>Cambios y confirmaciones de Oracle</h2></div><div class="notice">Los cambios se guardan en Oracle con tu sesión, también durante una sincronización (esperan a que terminen las lecturas en curso). Antes de guardar se comprueba el permiso y el valor actual; el valor confirmado se actualiza al releer Oracle. Un resultado incierto no se reintenta automáticamente. Citas, seguimientos e informes continúan como formularios locales.</div><div class="table-wrap"><table><thead><tr><th>OPORTUNIDAD</th><th>CAMPO</th><th>VALOR ANTERIOR</th><th>CAMBIO SOLICITADO</th><th>ESTADO</th><th>ACCIÓN</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(c.opportunity_number)}</td><td>${esc(fieldLabel(c.field))}</td><td>${esc(c.old_value)}</td><td>${esc(c.new_value)}</td><td>${badge(titles[c.state]||c.state,c.state==='confirmed'?'green':['uncertain','failed','conflict'].includes(c.state)?'orange':'gray')}<span class="record-id">${esc(reasons[c.result_code]||'')}</span></td><td>${state.can_propose&&c.state==='uncertain'?`<button class="tiny-button" data-reconcile-change="${esc(c.id)}">Verificar en Oracle</button>`:''}${state.can_propose&&['pending_validation','conflict'].includes(c.state)?`<button class="tiny-button" data-cancel-change="${esc(c.id)}">Cancelar</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay cambios registrados con tu usuario.</td></tr>'}</tbody></table></div></section>`;
   }
   function syncView() {
     const config=state.settings;
@@ -287,9 +316,21 @@ window.UnisOracleLive = (() => {
   setInterval(async()=>{
     if(!window.HubAuth.isAuthenticated()||!root||!document.querySelector('[data-mode="live"].active')||inline||document.querySelector('#local-activity-form[open]'))return;
     try {const signature=JSON.stringify([state?.loaded_at,state?.detail_count,state?.extraction,state?.job,state?.worker_online,state?.records.map(r=>[r.opportunity_number,r._version]),Object.values(state?.details||{}).map(d=>d.loaded_at),activities,changes]);await refresh();
-      if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.extraction,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open)drawDetail();}}
+      if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.extraction,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open&&!drawerEdit)drawDetail();}}
     catch { /* Retain the last successful view during brief local outages. */ }
   },3000);
-  function reset(){refreshFlight=null;state=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=oracleStatus=segment=faculty=testDate=detailFilter='';page=1;inline=null;selected=null;view='base';cohort='';activities=[];changes=[];error='';}
-  return {render,reset};
+  // Outside the Admisiones view the full workspace is not polled; a light status call
+  // keeps the sync state current for the inactivity timer.
+  setInterval(async()=>{
+    if(!window.HubAuth.isAuthenticated()||document.querySelector('[data-mode="live"].active'))return;
+    try{lastJob=(await request('/api/oracle/status')).job;}catch{/* keep last known state */}
+  },30000);
+  function syncActive(){return ['pending','running'].includes((lastJob??state?.job)?.state);}
+  async function openRecord(number,section='general'){
+    window.UnisNavigate?.('live');
+    for(let i=0;i<50&&!(state&&catalog&&root);i++)await new Promise(r=>setTimeout(r,100));
+    if(state?.records.some(r=>r.opportunity_number===number))openDetail(number,section);
+  }
+  function reset(){refreshFlight=null;state=null;lastJob=null;drawerEdit=null;catalog=null;pageSize=12;sortKey='';sortDirection='asc';query=cycle=advisor=stage=oracleStatus=segment=faculty=testDate=detailFilter='';page=1;inline=null;selected=null;view='base';cohort='';activities=[];changes=[];error='';}
+  return {render,reset,syncActive,openRecord};
 })();

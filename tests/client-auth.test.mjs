@@ -24,3 +24,8 @@ test('explicit logout still revokes the server session',async()=>{
   const c=await client();c.events.DOMContentLoaded();await c.elements.get('#auth-logout').onclick();
   assert.equal(c.requests.includes('/api/auth/logout'),true);assert.equal(c.navigations(),1);
 });
+test('a synchronisation in progress keeps the portal open past the idle timeout',async()=>{
+  const c=await client();let syncing=true;c.context.window.UnisOracleLive={reset(){},syncActive:()=>syncing};
+  c.idle();assert.equal(c.context.window.HubAuth.isAuthenticated(),true);
+  syncing=false;c.idle();assert.equal(c.context.window.HubAuth.isAuthenticated(),false);
+});

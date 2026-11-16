@@ -9,8 +9,13 @@ from http.cookies import SimpleCookie
 from urllib.request import Request,urlopen
 from urllib.error import HTTPError
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from .scoped_repository import ScopedRepository
 from .oracle_read import OracleReadStore
+
+IDLE_SECONDS=int(os.environ.get('HUB_IDLE_MINUTES','15'))*60
+MAX_AGE_SECONDS=int(os.environ.get('HUB_SESSION_MAX_HOURS','8'))*3600
+ALIVE_GRACE_SECONDS=300
 
 class AuthError(Exception):
     def __init__(self,code='session'):self.code=code
@@ -69,17 +74,21 @@ class ScreenAuth:
         except Exception:raise AuthError()
         with self.lock:
             session=self.sessions.get(token);now=self.clock()
-            if not session or now-session['seen']>900 or now-session['created']>28800:
-                # An explicitly started read batch may finish without keeping the
-                # interactive cookie usable. No writes receive this exemption.
-                if session and self.batch_active(session):raise AuthError()
+            if session and self.sync_active(session):session['seen']=now
+            if not session or now-session['seen']>IDLE_SECONDS or now-session['created']>MAX_AGE_SECONDS:
                 expired=self.sessions.pop(token,None)
                 if expired:self.pool.submit(self.rpc,'/logout',{'id':expired['worker_id']})
                 raise AuthError()
             if now-session['checked']>10:
-                try:self.rpc('/alive',{'id':session['worker_id']})
-                except AuthError:self.sessions.pop(token,None);raise
-                session['checked']=now
+                try:
+                    self.rpc('/alive',{'id':session['worker_id']})
+                    session['checked']=now
+                except AuthError as error:
+                    # Only a confirmed loss of the Oracle context ends the session. A worker
+                    # that is slow to answer while it extracts (high CPU) is retried on the
+                    # next request instead of logging the user out mid-sync.
+                    if error.code=='session' or now-session['checked']>ALIVE_GRACE_SECONDS:
+                        self.sessions.pop(token,None);raise
             session['store'].heartbeat()
             return session
     def logout(self,cookie):
@@ -94,28 +103,42 @@ class ScreenAuth:
         with self.lock:
             now=self.clock();expired=[]
             for token,s in list(self.sessions.items()):
-                if (now-s['seen']>900 or now-s['created']>28800) and not self.batch_active(s):expired.append(self.sessions.pop(token))
+                # A running synchronisation keeps its session alive (bounded by MAX_AGE),
+                # even if the browser tab is idle or closed.
+                if self.sync_active(s) and now-s['created']<MAX_AGE_SECONDS:s['seen']=now
+                if now-s['seen']>IDLE_SECONDS or now-s['created']>MAX_AGE_SECONDS:expired.append(self.sessions.pop(token))
         for session in expired:
             try:self.rpc('/logout',{'id':session['worker_id']})
             except AuthError:pass
+    def sync_active(self,session):
+        job=session['store'].job or {}
+        return job.get('state') in ('pending','running') and self.clock()<session.get('created',0)+MAX_AGE_SECONDS
     def batch_active(self,session):
         job=session['store'].job or {}
         return (job.get('kind') in ('details_batch','opportunities') and job.get('state')=='running'
                 and session.get('batch_job')==job.get('id')
                 and self.clock()<session.get('batch_deadline',0)
-                and self.clock()<session.get('created',0)+28800)
+                and self.clock()<session.get('created',0)+MAX_AGE_SECONDS)
     def session_rpc(self,session,body):
+        if body.get('kind')=='write':
+            # A write may run while a sync is in progress: it waits for the reads in
+            # flight to finish and holds every lane, so Oracle never sees a save and a
+            # read from the same user at the same time.
+            with ExitStack() as stack:
+                stack.enter_context(session['task_lock'])
+                for lane_lock in session.get('lane_locks',[]):stack.enter_context(lane_lock)
+                return self._session_rpc(session,body)
         lock=session['lane_locks'][body['lane']] if body.get('kind')=='detail' and 'lane' in body else session['task_lock']
-        with lock:
-            with self.lock:
-                batch_read=self.batch_active(session) and (body.get('kind')=='opportunities' or body.get('kind')=='detail' and body.get('number') in session['store'].batch_numbers)
-                if (not any(s is session for s in self.sessions.values())
-                    or self.clock()-session['created']>=28800
-                    or self.clock()-session['seen']>900 and not batch_read):raise AuthError('session')
-            return self.rpc('/run',dict(body,id=session['worker_id']))
+        with lock:return self._session_rpc(session,body)
+    def _session_rpc(self,session,body):
+        with self.lock:
+            batch_read=self.batch_active(session) and (body.get('kind')=='opportunities' or body.get('kind')=='detail' and body.get('number') in session['store'].batch_numbers)
+            if (not any(s is session for s in self.sessions.values())
+                or self.clock()-session['created']>=MAX_AGE_SECONDS
+                or self.clock()-session['seen']>IDLE_SECONDS and not batch_read):raise AuthError('session')
+        return self.rpc('/run',dict(body,id=session['worker_id']))
     def submit_write(self,session,identifier,reconcile=False):
         if session['store'].role!='editor':raise PermissionError()
-        if self.batch_active(session):raise PermissionError()
         repo=session['store'].repository;actor=session['principal']
         request=next((r for r in repo.changes() if r['id']==identifier),None)
         if not request:raise PermissionError()
@@ -128,7 +151,7 @@ class ScreenAuth:
             with record_lock:
                 try:
                     with self.lock:
-                        if not any(s is session for s in self.sessions.values()) or self.clock()-session['seen']>900:raise AuthError('session')
+                        if not any(s is session for s in self.sessions.values()) or self.clock()-session['seen']>IDLE_SECONDS:raise AuthError('session')
                     if reconcile:
                         detail=self.session_rpc(session,{'kind':'detail','number':request['opportunity_number']})
                         actual=detail['fields'].get(request['field'],'')
@@ -138,6 +161,7 @@ class ScreenAuth:
                     else:
                         current=repo.start_write(identifier,actor)
                         result=self.session_rpc(session,{'kind':'write','change':{k:current[k] for k in ('opportunity_number','field','old_value','new_value')}})
+                        session['seen']=max(session['seen'],self.clock())
                         if not result.get('verified'):raise AuthError('uncertain')
                         repo.confirm_write(identifier,actor,result['detail'])
                     session['store']._reload()
@@ -153,7 +177,7 @@ class ScreenAuth:
         if job['kind'] in ('details_batch','opportunities'):
             now=self.clock()
             session['batch_job']=job['id']
-            session['batch_deadline']=min(session['created']+28800,now+14400)
+            session['batch_deadline']=session['created']+MAX_AGE_SECONDS
             store.job['background_until']=datetime.fromtimestamp(datetime.now(timezone.utc).timestamp()+session['batch_deadline']-now,timezone.utc).isoformat()
         consecutive_failures=0
         def run(lane=0):

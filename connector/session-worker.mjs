@@ -21,7 +21,7 @@ if(!loginOrigin.startsWith('https://')||!loginOrigin.endsWith('.identity.oraclec
 const sessions=new Map();let active=0,pendingLogins=0;const waiters=[];
 const LIMIT=Number(process.env.HUB_SCREEN_OPERATIONS||2);
 if(!Number.isInteger(LIMIT)||LIMIT<1||LIMIT>4)throw Error('configuration');
-const MAX_SESSIONS=8,IDLE=15*60*1000,MAX_AGE=8*60*60*1000;
+const MAX_SESSIONS=8,IDLE=Number(process.env.HUB_IDLE_MINUTES||15)*60*1000,MAX_AGE=Number(process.env.HUB_SESSION_MAX_HOURS||8)*60*60*1000;
 function takeIdlePage(){
  const candidates=[];
  for(const session of sessions.values())session.readPages.forEach((page,index)=>{
@@ -36,7 +36,8 @@ const pageBudget=new PageBudget(LIMIT,takeIdlePage),pageReads=new WeakMap();
 
 async function slot(fn){if(active>=LIMIT)await new Promise(r=>waiters.push(r));else active++;try{return await fn();}finally{const next=waiters.shift();if(next)next();else active--;}}
 async function remove(id){const s=sessions.get(id);sessions.delete(id);if(s){for(const timer of s.readTimers||[])clearTimeout(timer);await s.context.close().catch(()=>{});}}
-function alive(s){return s&&Date.now()-s.seen<IDLE&&Date.now()-s.created<MAX_AGE;}
+// A context that is reading or writing is alive: a long sync must not expire mid-run.
+function alive(s){return !!s&&Date.now()-s.created<MAX_AGE&&(s.busy||s.reading>0||Date.now()-s.seen<IDLE);}
 function trusted(page){return new URL(page.url()).origin===target.origin;}
 async function authenticated(page){return trusted(page)&&await page.getByRole('link',{name:'Página Inicial',exact:true}).count()>0;}
 function adapter(page){return {ui:page,settleFilters:uiSettler(page,target.origin),observe:async()=>{await page.locator('body').waitFor({state:'visible'});},clickAdvanced:async()=>ensureAdvancedSearch(page,()=>page.waitForTimeout(300)),scrollGrid:async(direction='down')=>{const fingerprint=()=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|');const before=await page.evaluate(fingerprint);const scroller=page.locator('div[id$="::scroller"]:visible').last();if(await scroller.count()){await scroller.hover();await page.mouse.wheel(0,direction==='up'?-650:650);}else{const t=page.getByRole('table',{name:'Oportunidad',exact:true}).last();await t.getByRole('row').last().getByRole('link').last().press(direction==='up'?'PageUp':'PageDown');}await page.waitForFunction(prior=>Array.from(document.querySelectorAll('table')).filter(t=>t.getAttribute('summary')==='Oportunidad').map(t=>t.getAttribute('_startrow')+':'+t.rows.length).join('|')!==prior,before,{timeout:10000}).catch(()=>{});}};}

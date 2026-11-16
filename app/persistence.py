@@ -16,14 +16,30 @@ def database_dsn():
 def fingerprint(payload):
     return hashlib.sha256(json.dumps(payload,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
 
+def _as_number(value):
+    cleaned=re.sub(r'[^0-9.\-]','',str(value).replace(',',''))
+    return Decimal(cleaned) if cleaned not in ('','-','.') else None
+
+def _as_date(value):
+    for pattern in ('%Y-%m-%d','%d/%m/%y','%d/%m/%Y'):
+        try:return datetime.strptime(str(value).strip(),pattern).date().isoformat()
+        except ValueError:pass
+    return None
+
 def same_value(field,old,new):
-    if field=='probability':
-        try:return Decimal(old)==Decimal(new)
+    from .catalog import EDIT_KINDS
+    kind=EDIT_KINDS.get(field,'text')
+    old='' if old is None else str(old).strip();new='' if new is None else str(new).strip()
+    if old==new:return True
+    if not old or not new:return False
+    if kind=='number':
+        try:
+            a,b=_as_number(old),_as_number(new)
+            if a is not None and b is not None:return a==b
         except InvalidOperation:pass
-    if field=='close_date':
-        for pattern in ('%Y-%m-%d','%d/%m/%y','%d/%m/%Y'):
-            try:return datetime.strptime(old,pattern).date().isoformat()==new
-            except ValueError:pass
+    if kind=='date':
+        a,b=_as_date(old),_as_date(new)
+        if a and b:return a==b
     return old==new
 
 class PostgresRepository:
@@ -109,7 +125,12 @@ class PostgresRepository:
             if row['version']!=version:raise ConflictError('Oracle cambió desde la lectura. Actualiza antes de editar.')
             if c.execute("SELECT 1 FROM change_requests WHERE opportunity_number=%s AND field=%s AND state IN ('pending_validation','queued','approved','applying','uncertain')",(number,field)).fetchone():
                 raise ConflictError('Ya existe una propuesta pendiente para este campo.')
-            identifier=str(uuid4());old=str(row['payload'].get(field,''))
+            identifier=str(uuid4())
+            if field in row['payload']:old=str(row['payload'].get(field) or '')
+            else:
+                # Detail-only fields (tests, financial aid, payments) live in record_details.
+                detail=c.execute('SELECT payload FROM record_details WHERE opportunity_number=%s',(number,)).fetchone()
+                old=str(((detail or {}).get('payload') or {}).get('fields',{}).get(field) or '')
             if same_value(field,old,new_value):raise ValidationError('El valor no cambió.')
             c.execute('''INSERT INTO change_requests(id,opportunity_number,field,old_value,new_value,expected_version,actor)
                 VALUES(%s,%s,%s,%s,%s,%s,%s)''',(identifier,number,field,old,new_value,version,actor))
@@ -138,11 +159,14 @@ class PostgresRepository:
             request=c.execute('SELECT * FROM change_requests WHERE id=%s AND actor=%s FOR UPDATE',(identifier,actor)).fetchone()
             if not request or request['state'] not in ('applying','uncertain'):raise ConflictError('Estado de escritura inválido.')
             actual=detail['fields'].get(request['field'])
-            if not same_value(request['field'],str(actual),request['new_value']):raise ConflictError('Oracle no confirmó el nuevo valor.')
+            if not same_value(request['field'],str(actual or ''),request['new_value']):raise ConflictError('Oracle no confirmó el nuevo valor.')
             row=c.execute('SELECT payload,version FROM opportunities WHERE opportunity_number=%s FOR UPDATE',(request['opportunity_number'],)).fetchone()
-            payload=dict(row['payload']);payload[request['field']]=actual;digest=fingerprint(payload)
-            result=c.execute('UPDATE opportunities SET payload=%s,source_hash=%s,version=version+1,last_seen=now(),last_write_verified_at=now() WHERE opportunity_number=%s RETURNING version',(Jsonb(payload),digest,request['opportunity_number'])).fetchone()
-            c.execute('INSERT INTO opportunity_history(opportunity_number,source_hash,payload,source_version) VALUES(%s,%s,%s,%s)',(request['opportunity_number'],digest,Jsonb(payload),result['version']))
+            if request['field'] in row['payload']:
+                payload=dict(row['payload']);payload[request['field']]=actual;digest=fingerprint(payload)
+                result=c.execute('UPDATE opportunities SET payload=%s,source_hash=%s,version=version+1,last_seen=now(),last_write_verified_at=now() WHERE opportunity_number=%s RETURNING version',(Jsonb(payload),digest,request['opportunity_number'])).fetchone()
+                c.execute('INSERT INTO opportunity_history(opportunity_number,source_hash,payload,source_version) VALUES(%s,%s,%s,%s)',(request['opportunity_number'],digest,Jsonb(payload),result['version']))
+            else:
+                c.execute('UPDATE opportunities SET last_write_verified_at=now() WHERE opportunity_number=%s',(request['opportunity_number'],))
             c.execute("UPDATE change_requests SET state='confirmed',result_code=NULL,oracle_verified_at=now(),updated_at=now() WHERE id=%s",(identifier,))
             c.execute('INSERT INTO audit_events(actor,action,opportunity_number,metadata) VALUES(%s,%s,%s,%s)',(actor,'oracle_write_verified',request['opportunity_number'],Jsonb({'request_id':identifier,'field':request['field']})))
         self.save_detail(request['opportunity_number'],detail)
@@ -179,6 +203,36 @@ class PostgresRepository:
     def save_setting(self,key,value):
         from psycopg.types.json import Jsonb
         with self.connect() as c:c.execute('INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(key,Jsonb(value)))
+
+    def trace_activity(self,numbers,days=30):
+        """Observed Oracle versions and portal actions per day, limited to visible records."""
+        numbers=list(numbers)
+        if not numbers:return {'by_day':[],'recent':[]}
+        with self.connect() as c:
+            versions=c.execute("""SELECT to_char(observed_at AT TIME ZONE 'America/Guatemala','YYYY-MM-DD') AS day,count(*) AS n
+                FROM opportunity_history WHERE opportunity_number = ANY(%s) AND observed_at>now()-make_interval(days => %s)
+                AND source_version>1 GROUP BY 1""",(numbers,days)).fetchall()
+            actions=c.execute("""SELECT to_char(at AT TIME ZONE 'America/Guatemala','YYYY-MM-DD') AS day,count(*) AS n
+                FROM audit_events WHERE opportunity_number = ANY(%s) AND at>now()-make_interval(days => %s) GROUP BY 1""",(numbers,days)).fetchall()
+            recent=c.execute("""SELECT at,actor,action,opportunity_number,metadata FROM audit_events
+                WHERE opportunity_number = ANY(%s) ORDER BY at DESC LIMIT 60""",(numbers,)).fetchall()
+        days_map={}
+        for r in versions:days_map.setdefault(r['day'],{'day':r['day'],'oracle_changes':0,'portal_actions':0})['oracle_changes']=r['n']
+        for r in actions:days_map.setdefault(r['day'],{'day':r['day'],'oracle_changes':0,'portal_actions':0})['portal_actions']=r['n']
+        return {'by_day':sorted(days_map.values(),key=lambda d:d['day']),
+                'recent':[{'at':r['at'].isoformat(),'actor':r['actor'],'action':r['action'],'opportunity_number':r['opportunity_number'],
+                           'field':(r['metadata'] or {}).get('field','')} for r in recent]}
+
+    def opportunity_trace(self,number):
+        with self.connect() as c:
+            versions=c.execute("""SELECT source_version,observed_at,payload FROM opportunity_history
+                WHERE opportunity_number=%s ORDER BY source_version""",(number,)).fetchall()
+            events=c.execute("""SELECT at,actor,action,metadata FROM audit_events WHERE opportunity_number=%s ORDER BY at""",(number,)).fetchall()
+            first=c.execute('SELECT first_seen,last_seen,version,last_write_verified_at FROM opportunities WHERE opportunity_number=%s',(number,)).fetchone()
+        iso=lambda v:v.isoformat() if v else None
+        return {'versions':[{'source_version':v['source_version'],'observed_at':iso(v['observed_at']),'payload':v['payload']} for v in versions],
+                'events':[{'at':iso(e['at']),'actor':e['actor'],'action':e['action'],'field':(e['metadata'] or {}).get('field','')} for e in events],
+                'record':{k:iso(v) if hasattr(v,'isoformat') else v for k,v in (first or {}).items()}}
 
     def summary(self):
         with self.connect() as c:

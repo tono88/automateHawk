@@ -1,73 +1,154 @@
+# UNIS Intelligent Process Hub — despliegue con un solo comando:
+#   docker compose up -d --build
+# Los secretos se generan solos la primera vez en el volumen `hub_secrets`
+# (nunca en el repositorio). Ver README → Despliegue con Docker.
+name: automatehawk
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
 services:
+  # 1) Genera (una sola vez) las contraseñas de PostgreSQL y el secreto del trabajador.
+  #    Si existe una instalación anterior (scripts/provision_local.py), su .env ya trae
+  #    HUB_PG_ADMIN_SECRET_FILE: se reutiliza esa contraseña y se conserva la base.
+  secrets:
+    image: alpine:3.21
+    volumes:
+      - hub_secrets:/secrets
+      - ${HUB_PG_ADMIN_SECRET_FILE:-./deploy/no-legacy-admin.secret}:/legacy/postgres-admin.secret:ro
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        umask 077
+        gen() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c "$$1"; }
+        for f in postgres-admin.secret postgres-app.secret worker.secret; do
+          if [ ! -s "/secrets/$$f" ]; then
+            if [ -s "/legacy/$$f" ]; then tr -d '\r\n' <"/legacy/$$f" >"/secrets/$$f"; echo "secreto $$f importado de la instalación anterior";
+            else gen 48 >"/secrets/$$f"; echo "secreto $$f generado"; fi
+          fi
+        done
+        printf 'postgresql://hub_app:%s@postgres:5432/automatehawk' "$$(cat /secrets/postgres-app.secret)" >/secrets/database.dsn
+        chmod 755 /secrets
+        chown 999:999 /secrets/postgres-admin.secret /secrets/postgres-app.secret && chmod 400 /secrets/postgres-admin.secret /secrets/postgres-app.secret
+        chown 65534:65534 /secrets/database.dsn && chmod 400 /secrets/database.dsn
+        chown 0:0 /secrets/worker.secret && chmod 444 /secrets/worker.secret
+    restart: "no"
+
   postgres:
     image: postgres:18
     environment:
       POSTGRES_USER: hub_admin
       POSTGRES_DB: automatehawk
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_admin_password
-    secrets:
-      - postgres_admin_password
-    ports:
-      - "127.0.0.1:55432:5432"
+      POSTGRES_PASSWORD_FILE: /secrets/postgres-admin.secret
     volumes:
       - postgres_data:/var/lib/postgresql
+      - hub_secrets:/secrets:ro
+    ports:
+      - "127.0.0.1:${HUB_PG_PORT:-55432}:5432"
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U hub_admin -d automatehawk"]
       interval: 5s
       timeout: 3s
-      retries: 20
+      retries: 30
     restart: unless-stopped
-  hub:
-    build: .
-    ports:
-      - "127.0.0.1:8765:8080"
-    environment:
-      HUB_MODE: local
-      HUB_AUTH_MODE: screen
-      HUB_READ_LANES: ${HUB_READ_LANES:-2}
-      HUB_SCREEN_OPERATIONS: ${HUB_SCREEN_OPERATIONS:-2}
-      HUB_LIST_GRANT_MINUTES: ${HUB_LIST_GRANT_MINUTES:-60}
-      HUB_DETAIL_GRANT_MINUTES: ${HUB_DETAIL_GRANT_MINUTES:-30}
-      HUB_WORKER_URL: http://oracle-worker:8767
-      HUB_WORKER_SECRET_FILE: /run/secrets/worker_secret
-      HUB_DATABASE_DSN_FILE: /run/secrets/hub_database_dsn
-      HUB_LOCAL_ROLE: ${HUB_LOCAL_ROLE:-reader}
-    secrets:
-      - hub_database_dsn
-      - worker_secret
+
+  # 2) Crea o actualiza la cuenta de la aplicación (idempotente, en cada arranque).
+  db-setup:
+    image: postgres:18
+    user: "999:999"
+    volumes:
+      - hub_secrets:/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        set -eu
+        export PGPASSWORD="$$(cat /secrets/postgres-admin.secret)"
+        if ! psql -h postgres -U hub_admin -d automatehawk -qtAc 'SELECT 1' >/dev/null 2>&1; then
+          echo "ERROR: la base existente usa otra contraseña de administrador."
+          echo "Si ya tenías una instalación anterior, define en .env HUB_PG_ADMIN_SECRET_FILE con la ruta de"
+          echo "su postgres-admin.secret (p. ej. C:/Users/<usuario>/AppData/Local/automateHawk/postgres-admin.secret),"
+          echo "ejecuta 'docker compose down', 'docker volume rm automatehawk_hub_secrets' y 'docker compose up -d'."
+          exit 1
+        fi
+        psql -v ON_ERROR_STOP=1 -q -h postgres -U hub_admin -d automatehawk -v app="$$(cat /secrets/postgres-app.secret)" <<'SQL'
+        SELECT format('CREATE ROLE hub_app LOGIN PASSWORD %L', :'app') WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='hub_app') \gexec
+        SELECT format('ALTER ROLE hub_app WITH LOGIN PASSWORD %L', :'app') \gexec
+        GRANT CONNECT, CREATE ON DATABASE automatehawk TO hub_app;
+        CREATE SCHEMA IF NOT EXISTS hub AUTHORIZATION hub_app;
+        SQL
+        echo "PostgreSQL listo para hub_app."
+    restart: "no"
+
+  hub:
+    build: .
+    image: automatehawk-hub
+    ports:
+      - "${HUB_BIND:-127.0.0.1}:${HUB_PORT:-8765}:8080"
+    environment:
+      HUB_MODE: local
+      HUB_AUTH_MODE: screen
+      HUB_LOCAL_ROLE: ${HUB_LOCAL_ROLE:-editor}
+      HUB_EDIT_FIELDS: ${HUB_EDIT_FIELDS:-default}
+      HUB_READ_LANES: ${HUB_READ_LANES:-2}
+      HUB_SCREEN_OPERATIONS: ${HUB_SCREEN_OPERATIONS:-2}
+      HUB_LIST_GRANT_MINUTES: ${HUB_LIST_GRANT_MINUTES:-60}
+      HUB_DETAIL_GRANT_MINUTES: ${HUB_DETAIL_GRANT_MINUTES:-240}
+      HUB_EDIT_GRANT_MINUTES: ${HUB_EDIT_GRANT_MINUTES:-240}
+      HUB_IDLE_MINUTES: ${HUB_IDLE_MINUTES:-15}
+      HUB_SESSION_MAX_HOURS: ${HUB_SESSION_MAX_HOURS:-8}
+      HUB_ALLOWED_HOSTS: ${HUB_ALLOWED_HOSTS:-}
+      HUB_COOKIE_SECURE: ${HUB_COOKIE_SECURE:-0}
+      HUB_WORKER_URL: http://oracle-worker:8767
+      HUB_WORKER_SECRET_FILE: /secrets/worker.secret
+      HUB_DATABASE_DSN_FILE: /secrets/database.dsn
+      TZ: America/Guatemala
+    volumes:
+      - hub_secrets:/secrets:ro
+    depends_on:
+      db-setup:
+        condition: service_completed_successfully
+      oracle-worker:
+        condition: service_started
     read_only: true
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    <<: *hardening
     restart: unless-stopped
+
   oracle-worker:
     build:
       context: .
       dockerfile: Dockerfile.worker
+    image: automatehawk-oracle-worker
     environment:
       HUB_SCREEN_OPERATIONS: ${HUB_SCREEN_OPERATIONS:-2}
-      ORACLE_LOGIN_ORIGIN: https://idcs-7352383b58144b88b6039c9d2de49434.identity.oraclecloud.com
-      ORACLE_URL: https://ehvs.fa.us6.oraclecloud.com/hcmUI/faces/FuseWelcome
-      HUB_WORKER_SECRET_FILE: /run/secrets/worker_secret
-    secrets:
-      - worker_secret
+      HUB_IDLE_MINUTES: ${HUB_IDLE_MINUTES:-15}
+      HUB_SESSION_MAX_HOURS: ${HUB_SESSION_MAX_HOURS:-8}
+      ORACLE_LOGIN_ORIGIN: ${ORACLE_LOGIN_ORIGIN:-https://idcs-7352383b58144b88b6039c9d2de49434.identity.oraclecloud.com}
+      ORACLE_URL: ${ORACLE_URL:-https://ehvs.fa.us6.oraclecloud.com/hcmUI/faces/FuseWelcome}
+      HUB_WORKER_SECRET_FILE: /secrets/worker.secret
+      TZ: America/Guatemala
+    volumes:
+      - hub_secrets:/secrets:ro
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
     init: true
     read_only: true
     tmpfs:
       - /tmp:size=512m,mode=1777
     shm_size: 256mb
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    <<: *hardening
     restart: unless-stopped
+
 volumes:
   postgres_data:
-secrets:
-  postgres_admin_password:
-    file: ${HUB_PG_ADMIN_SECRET_FILE:?Run scripts/provision_local.py first}
-  hub_database_dsn:
-    file: ${HUB_PG_DOCKER_DSN_FILE:?Run scripts/provision_local.py first}
-
-  worker_secret:
-    file: ${HUB_WORKER_SECRET_FILE:?Run scripts/provision_local.py first}
+  hub_secrets:

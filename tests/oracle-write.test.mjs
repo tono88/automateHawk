@@ -14,3 +14,15 @@ test('normalizes observed dates and probabilities for conflict checks',()=>{
   assert.equal(dateForOracle('2026-12-01','13/11/2026'),'01/12/2026');
   assert.equal(dateForOracle('2026-12-01','2026-11-13'),'2026-12-01');
 });
+test('compares amounts, percentages and empty values by field kind',()=>{
+  assert.ok(equivalent('amount','Q1,250.00','1250'));assert.ok(equivalent('financial_requested_1','50','50.0'));
+  assert.ok(equivalent('test_date','',null));assert.ok(!equivalent('test_date','','2026-02-01'));
+  assert.ok(!equivalent('test_call','No Aplica','Enero'));assert.equal(dateForOracle('','13/11/26'),'');
+});
+test('writer registry matches the hub catalogue',async()=>{
+  const {readFileSync}=await import('node:fs');const {EDIT_FIELDS}=await import('../connector/edit-fields.mjs');
+  const source=readFileSync(new URL('../app/catalog.py',import.meta.url),'utf8');
+  const block=source.slice(source.indexOf('EDIT_KINDS={'),source.indexOf('}',source.indexOf('EDIT_KINDS={')));
+  const keys=[...block.matchAll(/'([a-z_0-9]+)':'(text|choice|number|date)'/g)].map(m=>[m[1],m[2]]);
+  assert.deepEqual(Object.fromEntries(keys),Object.fromEntries(Object.entries(EDIT_FIELDS).map(([k,v])=>[k,v.kind])));
+});

@@ -15,6 +15,9 @@ class ScopedRepository(PostgresRepository):
         self.principal=principal;self.observed_fields={}
         self.basic_minutes=read_grant_minutes('HUB_LIST_GRANT_MINUTES',60)
         self.detail_minutes=read_grant_minutes('HUB_DETAIL_GRANT_MINUTES',30)
+        # The worker re-validates permission and current value on the live form before
+        # every save, so the edit window may follow the detail window.
+        self.edit_minutes=read_grant_minutes('HUB_EDIT_GRANT_MINUTES',self.detail_minutes)
         super().__init__(dsn)
     def grants(self):
         with self.connect() as c:
@@ -98,8 +101,8 @@ class ScopedRepository(PostgresRepository):
         super().save_detail(number,merged)
         with self.connect() as c:
             c.execute("""UPDATE user_permissions SET detail_fields=%s,capabilities=%s,activities_visible=%s,
-              detail_until=now()+make_interval(mins => %s),edit_until=now()+interval '30 minutes',
-              detail_checked_at=now(),checked_at=now() WHERE principal=%s AND opportunity_number=%s""",(Jsonb(list(detail['fields'])),Jsonb(detail['capabilities']),detail['activities']['queried'],self.detail_minutes,self.principal,number))
+              detail_until=now()+make_interval(mins => %s),edit_until=now()+make_interval(mins => %s),
+              detail_checked_at=now(),checked_at=now() WHERE principal=%s AND opportunity_number=%s""",(Jsonb(list(detail['fields'])),Jsonb(detail['capabilities']),detail['activities']['queried'],self.detail_minutes,self.edit_minutes,self.principal,number))
     def changes(self,number=None):
         if number:self.require(number)
         rows=super().changes(number)
@@ -109,6 +112,15 @@ class ScopedRepository(PostgresRepository):
             g=grants.get(row['opportunity_number'])
             return bool(g and row['field'] in (g['basic_fields']+(g['detail_fields'] if g['detail_until'] and g['detail_until']>now else [])))
         return [r for r in rows if visible(r) and r['actor']==self.principal]
+    def trace_activity(self,numbers,days=30):
+        visible=set(self.grants())
+        return super().trace_activity([n for n in numbers if n in visible],days)
+    def opportunity_trace(self,number):
+        grant=self.require(number)
+        result=super().opportunity_trace(number)
+        allowed=set(grant['basic_fields'])|{'opportunity_number'}
+        for version in result['versions']:version['payload']={k:v for k,v in version['payload'].items() if k in allowed}
+        return result
     def propose(self,number,field,*args):
         self.require(number,field);return super().propose(number,field,*args)
     def cancel(self,identifier,actor):

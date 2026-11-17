@@ -7,6 +7,7 @@ import {openExportMenu} from './oracle-export-menu.mjs';
 import {decodeExport} from './export-codec.mjs';
 /** Oracle screen gateway: no Oracle APIs, persistent profiles, recordings or raw logs. */
 import {applyScalarChange} from './oracle-write.mjs';
+import {createOpportunity} from './oracle-create.mjs';
 import {createServer} from 'node:http';
 import {readFileSync} from 'node:fs';
 import {randomBytes,timingSafeEqual} from 'node:crypto';
@@ -21,7 +22,7 @@ if(!loginOrigin.startsWith('https://')||!loginOrigin.endsWith('.identity.oraclec
 const sessions=new Map();let active=0,pendingLogins=0;const waiters=[];
 const LIMIT=Number(process.env.HUB_SCREEN_OPERATIONS||2);
 if(!Number.isInteger(LIMIT)||LIMIT<1||LIMIT>4)throw Error('configuration');
-const MAX_SESSIONS=8,IDLE=Number(process.env.HUB_IDLE_MINUTES||15)*60*1000,MAX_AGE=Number(process.env.HUB_SESSION_MAX_HOURS||8)*60*60*1000;
+const MAX_SESSIONS=8,IDLE=Number(process.env.HUB_IDLE_MINUTES||15)*60*1000,MAX_AGE=Math.max(Number(process.env.HUB_SESSION_MAX_HOURS||8),Number(process.env.HUB_SYNC_MAX_HOURS||24))*60*60*1000; // the hub enforces the shorter limit when no download is running
 function takeIdlePage(){
  const candidates=[];
  for(const session of sessions.values())session.readPages.forEach((page,index)=>{
@@ -82,6 +83,7 @@ async function run(body){
     await ensureReadPage(page,target.origin);
     a=adapter(page);a.applyScope=()=>applyOpportunityScope(a,body.kind==='opportunities'?validateQuery(body.query):validateQuery());let result;
     if(body.kind==='write')result=await applyScalarChange(a,body.change);
+    else if(body.kind==='create')result=await createOpportunity(a,body.request);
     else if(body.kind==='detail')result=await collectOpportunityDetail(a,body.number,{reuseQuery});
     else {
       if(reuseQuery)await a.applyScope();else await configureQuery(a);
@@ -100,7 +102,7 @@ async function run(body){
     return result;
   }catch(error){if(error.message==='timeout'&&a?.settleFilters?.pending)console.warn('Pending UI updates:',JSON.stringify(a.settleFilters.pending()));if(a?.scopeDiagnostic)console.warn('Scope verification:',JSON.stringify(a.scopeDiagnostic));console.warn('Oracle screen failure:',a?.phase||'session',error.name==='TimeoutError'?'timeout':String(error.message).includes('strict mode violation')?'ambiguous-control':['layout','timeout','session','scope'].includes(error.message)?error.message:['TypeError','ReferenceError'].includes(error.name)?error.name:'error');throw error;}finally{if(reading)s.reading--;else s.busy=false;if(reading)s.lanes.delete(cacheLane);if(page)await page.close().catch(()=>{});}
 }
-const safe=new Set(['session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
+const safe=new Set(['ambiguous-contact','contact-not-found','duplicate','contact-created','session','busy','capacity','login-layout','login-destination','credentials-or-challenge','layout','empty','permission','conflict','validation','side-effects','uncertain','write-not-started']);
 const http=createServer(async(req,res)=>{
   const respond=(code,data)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
   const supplied=Buffer.from(req.headers['x-worker-secret']||''),expected=Buffer.from(secret);

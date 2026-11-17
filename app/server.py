@@ -36,7 +36,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.session['demo']
     def authenticate(self):
         if not AUTH:return True
-        try:self.session=AUTH.resolve(self.headers.get('Cookie'));self.session['store']._reload();return True
+        try:self.session=AUTH.resolve(self.headers.get('Cookie'));self.session['store'].refresh_if_changed();return True
         except AuthError:self.respond(401,{'error':'Inicia sesión en Oracle para continuar.'});return False
     def log_message(self,*args): pass  # No request bodies, search terms or personal data in logs.
     def respond(self,status,data,kind='application/json; charset=utf-8'):
@@ -76,9 +76,15 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/oracle/snapshot': return self.respond(200,self.oracle.snapshot())
         if path=='/api/oracle/workspace':
             repo=self.oracle.repository
-            return self.respond(200,{'snapshot':self.oracle.snapshot(),
-                'changes':repo.changes() if repo else [],
-                'activities':repo.local_activities() if repo else [],'schemas':ACTIVITY_SCHEMA})
+            query=parse_qs(urlsplit(self.path).query)
+            try:since=int(query['since'][0]) if 'since' in query else None
+            except ValueError:since=None
+            snapshot=self.oracle.delta(since,(query.get('epoch') or [None])[0])
+            payload={'snapshot':snapshot,'changes':repo.changes() if repo else [],
+                'activities':repo.local_activities() if repo else [],
+                'creations':repo.creations() if repo and hasattr(repo,'creations') else []}
+            if not snapshot.get('delta'):payload['schemas']=ACTIVITY_SCHEMA
+            return self.respond(200,payload)
         if path=='/api/oracle/catalog':return self.respond(200,{'views':VIEWS,'fields':{k:{'label':v[0],'module':v[1]} for k,v in DETAIL_FIELDS.items()},'edit_fields':sorted(EDIT_FIELDS),'edit_kinds':{k:EDIT_KINDS[k] for k in EDIT_FIELDS},'verified_edit_fields':sorted(VERIFIED_EDIT_FIELDS&EDIT_FIELDS)})
         if path=='/api/oracle/trace':
             snapshot=self.oracle.snapshot();repo=self.oracle.repository
@@ -159,6 +165,16 @@ class Handler(BaseHTTPRequestHandler):
                     change=self.oracle.propose(body)
                     if AUTH:change=AUTH.submit_write(self.session,change['id'])
                     return self.respond(202,change)
+                if route=='/api/oracle/opportunities':
+                    creation=self.oracle.propose_creation(body)
+                    if AUTH:creation=AUTH.submit_create(self.session,creation['id'])
+                    return self.respond(202,creation)
+                if route=='/api/oracle/opportunities/retry':
+                    if not AUTH:raise PermissionError()
+                    return self.respond(202,AUTH.submit_create(self.session,body.get('id'),retry=True))
+                if route=='/api/oracle/opportunities/cancel':
+                    if self.oracle.role!='editor' or not self.oracle.repository:raise PermissionError()
+                    return self.respond(200,self.oracle.repository.cancel_creation(body.get('id'),self.actor))
                 if route=='/api/oracle/changes/reconcile':
                     if not AUTH:raise PermissionError()
                     return self.respond(202,AUTH.submit_write(self.session,body.get('id'),reconcile=True))
@@ -213,7 +229,7 @@ def main():
                     AUTH.sweep()
                     with AUTH.lock:sessions=list(AUTH.sessions.values())
                     for session in sessions:
-                        if monotonic()-session['seen']<IDLE_SECONDS and session['store'].scheduler_tick():AUTH.execute(session)
+                        if monotonic()-session['seen']<IDLE_SECONDS and (session['store'].scheduler_tick() or session['store'].resume()):AUTH.execute(session)
                 else:ORACLE.scheduler_tick()
             except Exception:pass
     Thread(target=schedule,daemon=True).start()

@@ -94,10 +94,12 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         assert not b.read_progress()
         assert a.load()['detail_states'][row['opportunity_number']]=='available'
         with a.connect() as c:c.execute("UPDATE user_permissions SET detail_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
-        assert a.load()['detail_states'][row['opportunity_number']]=='permission_expired' and not a.load()['details']
+        expired=a.load()
+        assert expired['detail_states'][row['opportunity_number']]=='unconfirmed'
+        assert expired['details'][row['opportunity_number']]['unconfirmed'] and not any(expired['details'][row['opportunity_number']]['capabilities'].values())
         resumed=OracleReadStore(ScopedRepository(dsn,'synthetic-user-a'))
         assert resumed.request('details_batch')['total']==1
-        assert not resumed.details
+        assert resumed.details[row['opportunity_number']]['unconfirmed']
         a.save_read_progress(row['opportunity_number'],'partial')
         assert OracleReadStore(ScopedRepository(dsn,'synthetic-user-a')).request('details_batch')['total']==1
         assert a.read_progress()[row['opportunity_number']]['state']=='partial'
@@ -116,7 +118,8 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         try:a.require(row['opportunity_number'],'name');raise AssertionError('Expired edit allowed by long read grant')
         except PermissionError:pass
         with a.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 hour' WHERE principal=%s",('synthetic-user-a',))
-        assert not a.load()['records']
+        last=a.load()['records']
+        assert len(last)==1 and last[0]['_unconfirmed'] and a.grant(row['opportunity_number']) is None
         assert b.load()['records']
         missing=dict(row,opportunity_number='SYNTHETIC-MISSING')
         a.save_snapshot([row,missing],'Inventario ficticio inicial')
@@ -143,7 +146,7 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         b.save_read_progress(row['opportunity_number'],'reading',1)
         b.save_read_progress(row['opportunity_number'],'completed')
         assert not b.read_progress()[row['opportunity_number']]['needs_refresh']
-        with b.connect() as c:c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '25 hours' WHERE principal=%s",('synthetic-user-b',))
+        with b.connect() as c:c.execute("UPDATE detail_read_progress SET updated_at=now()-interval '169 hours' WHERE principal=%s",('synthetic-user-b',))
         assert b.read_progress()[row['opportunity_number']]['needs_refresh']
         with b.connect() as c:c.execute("UPDATE detail_read_progress SET source_version=NULL,updated_at=now() WHERE principal=%s",('synthetic-user-b',))
         assert not b.read_progress()[row['opportunity_number']]['needs_refresh']
@@ -198,7 +201,68 @@ with psycopg.connect(admin_base+'automatehawk',autocommit=True) as owner:
         assert activity['recent'] and all(e['opportunity_number']==row['opportunity_number'] for e in activity['recent'])
         try:ScopedRepository(dsn,'synthetic-stranger').opportunity_trace(row['opportunity_number']);raise AssertionError('Trace without permission')
         except PermissionError:pass
-        print(json.dumps({'postgresql_integration':'passed','checks':83,'data':'synthetic isolated database'}))
+        # Incremental sync: an unchanged record renews its detail window from the list;
+        # a changed record (new "Última actualización") is marked for a new detail read.
+        inc=ScopedRepository(dsn,'synthetic-incremental');inc.basic_minutes=inc.detail_minutes=inc.edit_minutes=60
+        base={'opportunity_number':'SYN-INC-1','name':'Incremental ficticia','updated_at':'01/11/26'}
+        inc.save_snapshot([base],'Inventario incremental ficticio')
+        inc.save_detail('SYN-INC-1',{'fields':{'name':'Incremental ficticia'},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]},'schema_version':2})
+        version=inc.load()['records'][0]['_version']
+        inc.save_read_progress('SYN-INC-1','completed',source_version=version)
+        with inc.connect() as c:c.execute("UPDATE user_permissions SET detail_until=now()-interval '1 minute' WHERE principal=%s",(inc.principal,))
+        assert inc.read_progress()['SYN-INC-1']['permission_refresh_required']
+        inc.save_snapshot([base],'Inventario incremental ficticio')
+        progress=inc.read_progress()['SYN-INC-1']
+        assert not progress['permission_refresh_required'] and not progress['needs_refresh'],progress
+        inc.save_snapshot([dict(base,updated_at='16/11/26')],'Inventario incremental ficticio')
+        assert inc.read_progress()['SYN-INC-1']['needs_refresh']
+        # Opportunities created from the portal: request, mirror and confirmation.
+        from app.oracle_read import OracleReadStore
+        creator=OracleReadStore(ScopedRepository(dsn,'synthetic-creator'),role='editor');creator.actor='synthetic-creator'
+        request=creator.propose_creation({'name':'Creación ficticia','close_date':'2026-12-01','contact':{'mode':'none'},'extra':{}})
+        try:creator.propose_creation({'name':'creación ficticia','close_date':'2026-12-01','contact':{'mode':'none'}});raise AssertionError('Duplicate creation accepted')
+        except ConflictError:pass
+        assert [c['state'] for c in creator.repository.creations()]==['pending_validation']
+        assert not ScopedRepository(dsn,'synthetic-other').creations()
+        created=creator.ingest_created({'opportunity_number':'SYN-CREATED-1','name':'Creación ficticia','stage':'01 - Interesado'},
+            {'fields':{'name':'Creación ficticia','test_call':''},'capabilities':{'test_call':True},'activities':{'queried':False,'rows':[]},'schema_version':2})
+        assert created and created['opportunity_number']=='SYN-CREATED-1'
+        assert creator.details['SYN-CREATED-1']['capabilities']['test_call'] and not creator.needs_detail('SYN-CREATED-1')
+        creator.repository.creation_state(request['id'],'synthetic-creator','confirmed',number='SYN-CREATED-1')
+        assert creator.repository.creations()[0]['opportunity_number']=='SYN-CREATED-1'
+        follow=creator.propose({'opportunity_number':'SYN-CREATED-1','field':'test_call','value':'Enero 2027','version':created['_version']})
+        assert follow['state']=='pending_validation'
+        try:creator.propose_creation({'name':'Creación ficticia','close_date':'2026-12-01','contact':{'mode':'none'}});raise AssertionError('Existing name accepted')
+        except ConflictError:pass
+        # Last-copy view: expired grants are shown as unconfirmed (read-only) within the
+        # window; revoked or too old ones are not; a new inventory confirms them again.
+        stale=ScopedRepository(dsn,'synthetic-stale');stale.basic_minutes=stale.detail_minutes=stale.edit_minutes=60
+        rows=[{'opportunity_number':f'SYN-STALE-{i}','name':f'Copia ficticia {i}'} for i in range(3)]
+        stale.save_snapshot(rows,'Inventario ficticio')
+        for r in rows:stale.save_detail(r['opportunity_number'],{'fields':{'name':r['name']},'capabilities':{'name':True},'activities':{'queried':True,'rows':[]},'schema_version':2})
+        with stale.connect() as c:
+            c.execute("UPDATE user_permissions SET read_until=now()-interval '1 day',detail_until=now()-interval '1 day',edit_until=now()-interval '1 day' WHERE principal=%s",(stale.principal,))
+            c.execute("UPDATE user_permissions SET revoked_at=now() WHERE principal=%s AND opportunity_number='SYN-STALE-1'",(stale.principal,))
+            c.execute("UPDATE user_permissions SET read_until=now()-interval '30 days' WHERE principal=%s AND opportunity_number='SYN-STALE-2'",(stale.principal,))
+        view=stale.load()
+        assert [(r['opportunity_number'],r.get('_unconfirmed')) for r in view['records']]==[('SYN-STALE-0',True)],view['records']
+        assert view['details']['SYN-STALE-0']['unconfirmed'] and not any(view['details']['SYN-STALE-0']['capabilities'].values())
+        assert view['detail_states']['SYN-STALE-0']=='unconfirmed' and view['unconfirmed']==1
+        try:stale.propose('SYN-STALE-0','name','Otro nombre',view['records'][0]['_version'],stale.principal);raise AssertionError('Edit on unconfirmed row')
+        except PermissionError:pass
+        stale.save_snapshot([rows[0]],'Inventario ficticio')
+        view=stale.load()
+        assert not view['records'][0].get('_unconfirmed') and view['unconfirmed']==0
+        stale.reconcile_visible_inventory({'SYN-STALE-2'})
+        assert not stale.load()['records']
+        # Incremental refresh: the fingerprint moves with writes and with permission expiry.
+        marker=stale.fingerprint()
+        assert stale.fingerprint()==marker
+        stale.save_snapshot([dict(rows[2],name='Copia ficticia 2b')],'Inventario ficticio')
+        moved=stale.fingerprint();assert moved!=marker
+        with stale.connect() as c:c.execute("UPDATE user_permissions SET read_until=now()-interval '1 second' WHERE principal=%s",(stale.principal,))
+        assert stale.fingerprint()!=moved
+        print(json.dumps({'postgresql_integration':'passed','checks':107,'data':'synthetic isolated database'}))
     finally:
         if not name.startswith('automatehawk_test_'):raise RuntimeError('Base de prueba inválida')
         owner.execute(sql.SQL('DROP DATABASE {}').format(sql.Identifier(name)))

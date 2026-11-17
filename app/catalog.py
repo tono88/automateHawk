@@ -1,6 +1,7 @@
 """Verified UI field labels, view definitions and conservative editing policy."""
 import math
 import os
+import re
 from datetime import date
 from .domain import ValidationError, STAGES
 
@@ -73,35 +74,47 @@ VIEWS=[
  {'id':'sync','title':'Sincronización','description':'Frecuencia, frescura y estado del trabajador.'},
  {'id':'roadmap','title':'Roadmap','description':'Evolución operativa e inteligencia de negocio futura.'}
 ]
-# Fields of the opportunity "Resumen" panel that the screen writer can locate by
-# their visible label. The kind drives validation, comparison and the editor.
-# Oracle still decides per record and per user: a pencil only appears where the
-# last detail read observed an enabled control, and the worker re-checks the
-# live form (permission and current value) before saving.
+# Fields the screen writer can locate by their visible label: the opportunity
+# "Resumen" panel and the profile of the linked primary contact. The kind drives
+# validation, comparison and the editor. Oracle still decides per record and per
+# user: a pencil only appears where the last detail read observed an enabled
+# control, and the worker re-checks the live form (permission and current value)
+# before saving.
 EDIT_KINDS={
  'name':'text','stage':'choice','probability':'number','close_date':'date','amount':'number',
- 'cycle':'choice','year':'choice','admission_status':'choice','origin':'choice',
+ 'owner':'choice','cycle':'choice','year':'choice','admission_status':'choice','origin':'choice',
  'test_call':'choice','test_type':'choice','test_date':'date','test_route':'choice',
  'paa_process':'choice','agreement':'choice','interview':'choice',
  'financial_aid':'choice','financial_type_1':'choice','financial_requested_1':'number',
  'financial_type_2':'choice','financial_requested_2':'number','financial_status':'choice',
  'financial_comments':'text','documents_due':'date','tuition_delay_reason':'choice',
  'reservation_close':'date',
- # Academic and financial decisions: only editable with explicit opt-in.
  'resolution':'choice','financial_granted_1':'number','financial_granted_2':'number',
  'financial_acceptance':'choice','global_score':'number','paa_score':'number',
  'grade_average':'number','required_score':'number',
+ # Primary contact profile.
+ 'contact_first_name':'text','contact_middle_name':'text','contact_last_name':'text',
+ 'contact_second_last_name':'text','birth_date':'date','document_id':'text',
+ 'contact_email':'email','contact_phone':'text','career':'choice','faculty':'choice',
+ 'lead_status':'choice','test_month':'choice','contact_test_type':'choice','hoodie_size':'choice',
+ 'document_status':'choice','financial_interest':'choice','graduation_school_year':'choice',
+ 'homeschool':'boolean','campus_id':'text','scala_id':'text','campus_status':'choice',
 }
-PROTECTED_EDIT_FIELDS={'resolution','financial_granted_1','financial_granted_2','financial_acceptance',
+CONTACT_EDIT_FIELDS={k for k in EDIT_KINDS if DETAIL_FIELDS.get(k,('',''))[1]=='contact'}
+# Identifiers maintained by the Campus/SCALA integrations: only with explicit opt-in.
+PROTECTED_EDIT_FIELDS={'campus_id','scala_id','campus_status'}
+# Academic and award decisions: excluded by the conservative "safe" policy.
+DECISION_FIELDS={'resolution','financial_granted_1','financial_granted_2','financial_acceptance',
  'global_score','paa_score','grade_average','required_score'}
 # Writers exercised end to end with synthetic data or an authorised correction.
 VERIFIED_EDIT_FIELDS={'name','stage','probability','close_date','test_call'}
-REQUIRED_EDIT_FIELDS={'name','stage','probability','close_date'}
+REQUIRED_EDIT_FIELDS={'name','stage','probability','close_date','contact_first_name','contact_last_name'}
 
 def configured_edit_fields(raw=None):
     raw=os.environ.get('HUB_EDIT_FIELDS','') if raw is None else raw
     raw=raw.strip()
     if not raw or raw=='default':return set(EDIT_KINDS)-PROTECTED_EDIT_FIELDS
+    if raw=='safe':return set(EDIT_KINDS)-PROTECTED_EDIT_FIELDS-DECISION_FIELDS
     if raw=='verified':return set(VERIFIED_EDIT_FIELDS)
     if raw=='all':return set(EDIT_KINDS)
     chosen={f.strip() for f in raw.split(',') if f.strip()}
@@ -131,4 +144,57 @@ def validate_change(field,value):
     if kind=='date':
         try:date.fromisoformat(value)
         except ValueError:raise ValidationError('Utiliza una fecha AAAA-MM-DD.')
+    if kind=='email' and not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',value):raise ValidationError('Correo electrónico inválido.')
+    if kind=='boolean' and value not in ('Sí','No'):raise ValidationError('Elige Sí o No.')
     return value
+
+CREATE_YEAR=2026  # The portal inventory covers opportunities that close in this year.
+CREATE_BASE_FIELDS={'name','close_date','stage','probability'}
+
+def _text(value,label,limit=150,required=True):
+    if value is None:value=''
+    if not isinstance(value,str) or len(value)>limit:raise ValidationError(f'{label} inválido.')
+    value=value.strip()
+    if required and not value:raise ValidationError(f'{label} es obligatorio.')
+    return value
+
+def validate_creation(body):
+    """New opportunity requested from the portal; created in Oracle by the screen worker."""
+    if not isinstance(body,dict) or set(body)-{'name','close_date','stage','probability','contact','extra'}:raise ValidationError('Solicitud inválida.')
+    out={'name':_text(body.get('name'),'Nombre de la oportunidad',240)}
+    close=_text(body.get('close_date'),'Fecha de cierre',10)
+    try:closed=date.fromisoformat(close)
+    except ValueError:raise ValidationError('Utiliza una fecha de cierre AAAA-MM-DD.')
+    if closed.year!=CREATE_YEAR:raise ValidationError(f'La cartera del portal cubre cierres en {CREATE_YEAR}; usa una fecha de cierre de ese año.')
+    out['close_date']=close
+    out['stage']=_text(body.get('stage') or STAGES[0],'Etapa',80)
+    if out['stage'] not in STAGES:raise ValidationError('Etapa no permitida.')
+    probability=_text(body.get('probability'),'Probabilidad',6,required=False)
+    if probability:
+        try:
+            number=float(probability)
+            if not math.isfinite(number) or not 0<=number<=100:raise ValueError()
+        except ValueError:raise ValidationError('La probabilidad debe estar entre 0 y 100.')
+    out['probability']=probability
+    contact=body.get('contact')
+    if not isinstance(contact,dict) or contact.get('mode') not in ('existing','new','none'):raise ValidationError('Indica el contacto principal.')
+    if contact['mode']=='existing':
+        if set(contact)-{'mode','name'}:raise ValidationError('Contacto inválido.')
+        out['contact']={'mode':'existing','name':_text(contact.get('name'),'Nombre del contacto',240)}
+    elif contact['mode']=='new':
+        if set(contact)-{'mode','first_name','last_name','email','phone'}:raise ValidationError('Contacto inválido.')
+        email=_text(contact.get('email'),'Correo electrónico',300,required=False)
+        if email and not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+',email):raise ValidationError('Correo electrónico inválido.')
+        out['contact']={'mode':'new','first_name':_text(contact.get('first_name'),'Nombre del aspirante'),
+            'last_name':_text(contact.get('last_name'),'Apellidos del aspirante'),'email':email,
+            'phone':_text(contact.get('phone'),'Teléfono',40,required=False)}
+    else:out['contact']={'mode':'none'}
+    extra=body.get('extra') or {}
+    if not isinstance(extra,dict) or len(extra)>20:raise ValidationError('Campos adicionales inválidos.')
+    clean={}
+    for field,value in extra.items():
+        if field in CREATE_BASE_FIELDS or field in CONTACT_EDIT_FIELDS:raise ValidationError('Campo adicional no permitido.')
+        value=validate_change(field,value)
+        if value:clean[field]=value
+    out['extra']=clean
+    return out

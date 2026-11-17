@@ -23,6 +23,6 @@ test('writer registry matches the hub catalogue',async()=>{
   const {readFileSync}=await import('node:fs');const {EDIT_FIELDS}=await import('../connector/edit-fields.mjs');
   const source=readFileSync(new URL('../app/catalog.py',import.meta.url),'utf8');
   const block=source.slice(source.indexOf('EDIT_KINDS={'),source.indexOf('}',source.indexOf('EDIT_KINDS={')));
-  const keys=[...block.matchAll(/'([a-z_0-9]+)':'(text|choice|number|date)'/g)].map(m=>[m[1],m[2]]);
+  const keys=[...block.matchAll(/'([a-z_0-9]+)':'(text|choice|number|date|email|boolean)'/g)].map(m=>[m[1],m[2]]);
   assert.deepEqual(Object.fromEntries(keys),Object.fromEntries(Object.entries(EDIT_FIELDS).map(([k,v])=>[k,v.kind])));
 });

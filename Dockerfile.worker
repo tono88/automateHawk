@@ -2,7 +2,17 @@ FROM node:24-bookworm-slim
 WORKDIR /worker
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npx playwright install --with-deps chromium
+# Configuración de npm para conexiones inestables
+ENV NPM_CONFIG_FETCH_RETRIES=6 \
+    NPM_CONFIG_FETCH_RETRY_MINTIMEOUT=20000 \
+    NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT=120000 \
+    NPM_CONFIG_FETCH_TIMEOUT=300000
+
+# Instalar dependencias de Node.js
+RUN npm ci --omit=dev
+
+# Instalar Chromium y sus dependencias
+RUN npx playwright install --with-deps chromium
 COPY connector ./connector
 ENV HOME=/tmp
 USER node

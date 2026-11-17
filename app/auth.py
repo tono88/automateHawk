@@ -15,6 +15,9 @@ from .oracle_read import OracleReadStore
 
 IDLE_SECONDS=int(os.environ.get('HUB_IDLE_MINUTES','15'))*60
 MAX_AGE_SECONDS=int(os.environ.get('HUB_SESSION_MAX_HOURS','8'))*3600
+# While the portfolio is still being downloaded (first load, or resuming after a transient
+# Oracle failure) the session stays alive in the background up to this limit.
+SYNC_MAX_SECONDS=max(MAX_AGE_SECONDS,int(os.environ.get('HUB_SYNC_MAX_HOURS','24'))*3600)
 ALIVE_GRACE_SECONDS=300
 
 class AuthError(Exception):
@@ -32,7 +35,8 @@ class ScreenAuth:
     def rpc(self,path,body):
         request=Request(self.url+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json','X-Worker-Secret':self.secret},method='POST')
         try:
-            with urlopen(request,timeout=90 if path=='/login' else 150 if path=='/run' else 5) as r:return json.load(r)
+            timeout=90 if path=='/login' else 360 if path=='/run' and body.get('kind')=='create' else 150 if path=='/run' else 5
+            with urlopen(request,timeout=timeout) as r:return json.load(r)
         except HTTPError as error:
             try:code=json.load(error).get('code','unavailable')
             except Exception:code='unavailable'
@@ -60,7 +64,9 @@ class ScreenAuth:
             token=token_urlsafe(48);now=self.clock()
             session={'worker_id':verified['id'],'principal':principal,'display':verified['display'],'store':store,'created':now,'seen':now,'checked':now,'demo':None,'task_lock':Lock(),'lane_locks':[Lock() for _ in range(self.read_lanes)],'grant_lock':Lock()}
             with self.lock:self.sessions[token]=session
-            if not store.records or not (store.listing_coverage or {}).get('complete'):store.request('opportunities');self.execute(session)
+            # Rows shown from the last copy are re-confirmed right away with a new inventory.
+            if not store.records or not (store.listing_coverage or {}).get('complete') or store.unconfirmed():store.request('opportunities');self.execute(session)
+            elif store.pending_details():store.request('details_batch');self.execute(session)
             return token,session
         except Exception:
             if verified:
@@ -75,7 +81,7 @@ class ScreenAuth:
         with self.lock:
             session=self.sessions.get(token);now=self.clock()
             if session and self.sync_active(session):session['seen']=now
-            if not session or now-session['seen']>IDLE_SECONDS or now-session['created']>MAX_AGE_SECONDS:
+            if not session or now-session['seen']>IDLE_SECONDS or now>self.deadline(session):
                 expired=self.sessions.pop(token,None)
                 if expired:self.pool.submit(self.rpc,'/logout',{'id':expired['worker_id']})
                 raise AuthError()
@@ -103,24 +109,28 @@ class ScreenAuth:
         with self.lock:
             now=self.clock();expired=[]
             for token,s in list(self.sessions.items()):
-                # A running synchronisation keeps its session alive (bounded by MAX_AGE),
-                # even if the browser tab is idle or closed.
-                if self.sync_active(s) and now-s['created']<MAX_AGE_SECONDS:s['seen']=now
-                if now-s['seen']>IDLE_SECONDS or now-s['created']>MAX_AGE_SECONDS:expired.append(self.sessions.pop(token))
+                # A synchronisation that is running or will resume keeps its session alive
+                # until everything is downloaded, even if the browser tab is idle or closed.
+                if self.sync_active(s):s['seen']=now
+                if now-s['seen']>IDLE_SECONDS or now>self.deadline(s):expired.append(self.sessions.pop(token))
         for session in expired:
             try:self.rpc('/logout',{'id':session['worker_id']})
             except AuthError:pass
     def sync_active(self,session):
-        job=session['store'].job or {}
-        return job.get('state') in ('pending','running') and self.clock()<session.get('created',0)+MAX_AGE_SECONDS
+        """A download in progress, or one that resumes by itself after a transient failure."""
+        store=session['store'];job=store.job or {}
+        if self.clock()>=session.get('created',0)+SYNC_MAX_SECONDS:return False
+        return job.get('state') in ('pending','running') or bool(getattr(store,'resume_pending',lambda:False)())
+    def deadline(self,session):
+        return session.get('created',0)+(SYNC_MAX_SECONDS if self.sync_active(session) else MAX_AGE_SECONDS)
     def batch_active(self,session):
         job=session['store'].job or {}
         return (job.get('kind') in ('details_batch','opportunities') and job.get('state')=='running'
                 and session.get('batch_job')==job.get('id')
                 and self.clock()<session.get('batch_deadline',0)
-                and self.clock()<session.get('created',0)+MAX_AGE_SECONDS)
+                and self.clock()<session.get('created',0)+SYNC_MAX_SECONDS)
     def session_rpc(self,session,body):
-        if body.get('kind')=='write':
+        if body.get('kind') in ('write','create'):
             # A write may run while a sync is in progress: it waits for the reads in
             # flight to finish and holds every lane, so Oracle never sees a save and a
             # read from the same user at the same time.
@@ -134,7 +144,7 @@ class ScreenAuth:
         with self.lock:
             batch_read=self.batch_active(session) and (body.get('kind')=='opportunities' or body.get('kind')=='detail' and body.get('number') in session['store'].batch_numbers)
             if (not any(s is session for s in self.sessions.values())
-                or self.clock()-session['created']>=MAX_AGE_SECONDS
+                or self.clock()>=self.deadline(session)
                 or self.clock()-session['seen']>IDLE_SECONDS and not batch_read):raise AuthError('session')
         return self.rpc('/run',dict(body,id=session['worker_id']))
     def submit_write(self,session,identifier,reconcile=False):
@@ -171,13 +181,52 @@ class ScreenAuth:
                 except Exception:repo.write_state(identifier,actor,'uncertain','unavailable')
         self.pool.submit(write)
         return {'id':identifier,'state':'uncertain' if reconcile else 'queued','message':'Verificando en Oracle.' if reconcile else 'Cambio en cola para guardar y verificar en Oracle.'}
+    def submit_create(self,session,identifier,retry=False):
+        """Creates an opportunity in Oracle with the user's session, then mirrors it locally."""
+        store=session['store']
+        if store.role!='editor':raise PermissionError()
+        repo=store.repository;actor=session['principal']
+        request=next((r for r in repo.creations() if r['id']==identifier),None)
+        if not request or request['state']!=('failed' if retry else 'pending_validation'):raise PermissionError()
+        repo.creation_state(identifier,actor,'queued')
+        def create():
+            contact_created=request['contact_created']
+            try:
+                with self.lock:
+                    if not any(s is session for s in self.sessions.values()) or self.clock()-session['seen']>IDLE_SECONDS:raise AuthError('session')
+                repo.creation_state(identifier,actor,'applying')
+                result=self.session_rpc(session,{'kind':'create','request':dict(request['payload'],contact_created=contact_created)})
+                session['seen']=max(session['seen'],self.clock())
+                contact_created=contact_created or bool(result.get('contact_created'))
+                if not result.get('created') or not result.get('opportunity_number'):raise AuthError('uncertain')
+                number=result['opportunity_number']
+                store.ingest_created(result.get('row') or {'opportunity_number':number},result.get('detail'))
+                repo.creation_state(identifier,actor,'confirmed',number=number,contact_created=contact_created)
+                # Admission fields chosen in the form are saved as ordinary verified changes.
+                for field,value in (request['payload'].get('extra') or {}).items():
+                    try:
+                        record=next(r for r in store.records if r['opportunity_number']==number)
+                        change=store.propose({'opportunity_number':number,'field':field,'value':value,'version':record['_version']})
+                        self.submit_write(session,change['id'])
+                    except Exception as error:
+                        print('Follow-up field not queued:',field,type(error).__name__,flush=True)
+            except AuthError as error:
+                code=error.code
+                if code=='contact-created':contact_created=True;code='write-not-started'
+                state='uncertain' if code=='uncertain' else 'failed'
+                repo.creation_state(identifier,actor,state,code,contact_created=contact_created)
+            except Exception as error:
+                print('Oracle create failure:',type(error).__name__,flush=True)
+                repo.creation_state(identifier,actor,'uncertain','unavailable',contact_created=contact_created)
+        self.pool.submit(create)
+        return {'id':identifier,'state':'queued','message':'Creación en cola: se registrará en Oracle con tu sesión y se verificará.'}
     def execute(self,session):
         store=session['store'];job=store.claim()
         if not job:return
         if job['kind'] in ('details_batch','opportunities'):
             now=self.clock()
             session['batch_job']=job['id']
-            session['batch_deadline']=session['created']+MAX_AGE_SECONDS
+            session['batch_deadline']=session['created']+SYNC_MAX_SECONDS
             store.job['background_until']=datetime.fromtimestamp(datetime.now(timezone.utc).timestamp()+session['batch_deadline']-now,timezone.utc).isoformat()
         consecutive_failures=0
         def run(lane=0):
@@ -221,12 +270,16 @@ class ScreenAuth:
                                 break
                         if consecutive_failures>=3 and store.batch(internal=True)['pending']:
                             store.fail('timeout')
-                            store.job['message']='Oracle no está respondiendo. Se conservan el avance y los pendientes; puedes retomar la carga con tu sesión.'
+                            store.job['message']='Oracle no está respondiendo. Se conserva el avance; la carga se retomará sola en unos minutos.'
                 elif job['kind']=='opportunities':
                     coverage=self.refresh_listing(session)
                     store.job.update(state='completed' if coverage['complete'] else 'failed',
                       message=f"Inventario 2026: {coverage['row_count']} oportunidades identificadas en todos los estados."+('' if coverage['complete'] else ' Hay intervalos que exceden el límite de exportación.'),
                       finished_at=datetime.now(timezone.utc).isoformat())
+                    # A verified inventory continues straight into the details that are
+                    # missing or changed, without waiting for a click or the scheduler.
+                    if coverage['complete'] and store.pending_details():
+                        store.request('details_batch');self.pool.submit(self.execute,session)
                 else:
                     store.repository.snapshot_started=datetime.now(timezone.utc)
                     if job['kind']=='detail':store.read_attempt(job['opportunity_number'],1)

@@ -6,7 +6,13 @@ Portal de admisiones para **Oracle Fusion Cloud Sales → Ventas**, con cartera 
 
 El usuario ingresa con sus credenciales de Oracle. El servicio valida el acceso usando el formulario institucional; no utiliza APIs de Oracle ni guarda contraseñas o perfiles de navegador. Un navegador mantiene contextos aislados y temporales por usuario, con dos tareas simultáneas y un máximo inicial de ocho contextos. La cookie local es opaca y HttpOnly; la sesión vence por inactividad o cierre de sesión.
 
-La sesión vence tras 15 minutos de inactividad, **salvo mientras haya una sincronización en curso**: la carga de inventario o de fichas cuenta como actividad (en el navegador y en el servidor) y la sesión sigue abierta hasta que termina, con el máximo de ocho horas desde el acceso. Una demora del trabajador de Oracle (por ejemplo, CPU alta durante la extracción) ya no cierra la sesión; solo se cierra si Oracle confirma que el contexto se perdió o si el trabajador no responde durante cinco minutos.
+La sesión vence tras 15 minutos de inactividad, **salvo mientras se esté descargando la cartera**: la carga de inventario o de fichas cuenta como actividad (en el navegador y en el servidor) y la sesión sigue abierta en segundo plano, aunque se cierre la pestaña, hasta que se descargue todo (máximo `HUB_SYNC_MAX_HOURS`, 24 horas por defecto). Si Oracle deja de responder a mitad de la carga, el avance se conserva y la descarga se retoma sola tras una espera creciente (de 1 a 30 minutos). Las fichas que fallan tres veces quedan para revisión y no se reintentan sin fin. Solo una pérdida de la sesión de Oracle exige volver a iniciar sesión. Sin descarga en curso, la sesión dura como máximo `HUB_SESSION_MAX_HOURS` (8 horas). Una demora del trabajador de Oracle (por ejemplo, CPU alta durante la extracción) ya no cierra la sesión; solo se cierra si Oracle confirma que el contexto se perdió o si el trabajador no responde durante cinco minutos.
+
+**Sincronización incremental.** La primera extracción lee todas las fichas; después solo se vuelven a leer las oportunidades que Oracle informa como modificadas (cambia su fila en la exportación, incluida la «Última actualización de oportunidad»), las lecturas con incidencias y, como red de seguridad, las fichas con más de `HUB_DETAIL_MAX_AGE_HOURS` horas (168 por defecto). Cuando el inventario confirma que un registro no cambió, sus permisos de detalle y edición se renuevan sin volver a abrir la ficha. El inventario de la lista sigue recorriendo los intervalos del año porque es la forma de detectar cambios y altas, pero no reescribe registros sin cambios.
+
+**Vista inmediata al iniciar sesión.** Al volver a entrar, el portal muestra de inmediato la última copia de las oportunidades que ese usuario vio en Oracle en los últimos `HUB_STALE_VIEW_DAYS` días (7 por defecto), con el aviso «Mostrando la última copia» y la marca «Por reconfirmar» en cada registro. Al mismo tiempo arranca el inventario, que las reconfirma intervalo por intervalo: las confirmadas recuperan la edición y las que Oracle ya no muestra a ese usuario desaparecen al terminar. Mientras un registro no está reconfirmado se puede consultar pero no editar. Con `HUB_STALE_VIEW_DAYS=0` se vuelve al modo estricto: solo se muestra lo confirmado en la sesión.
+
+**Refresco ligero.** El navegador recibe la cartera completa una vez; después, cada pocos segundos, solo recibe los registros, fichas y estados que cambiaron. En el servidor, cada petición comprueba con una consulta liviana si la base cambió y solo entonces recarga la copia de ese usuario.
 
 PostgreSQL conserva una única copia global. El backend guarda y aplica los permisos de cada persona por oportunidad y campo. Los permisos básicos vencen en una hora y los de detalle en cuatro horas por defecto (`HUB_DETAIL_GRANT_MINUTES`); se reutilizan entre ingresos mientras estén vigentes. La cartera abre sin filtro de asesor, ciclo o etapa y muestra todos los registros autorizados disponibles. El inventario está configurado para oportunidades abiertas y cerradas con fecha de cierre en 2026. Consulta intervalos de fechas, los subdivide cuando alcanzan 500 filas y verifica las fechas y los estados de cada exportación. El avance del inventario y la cobertura de fichas se muestran por separado. La presencia de un registro en la base no concede acceso a todos los usuarios.
 
@@ -22,24 +28,46 @@ Recibos, autorizaciones, pagos efectivos, asistencia, cartas y otros campos toda
 
 La carga ampliada conserva el avance por usuario en PostgreSQL, reintenta cada lectura hasta tres veces y continúa con otras oportunidades cuando una falla. Tras tres fallos consecutivos pausa el lote. El botón Completar datos de la cartera permite retomar lo pendiente después de un nuevo ingreso. Los filtros de extracción distinguen lo pendiente y las incidencias; completar una lectura no renueva indefinidamente sus permisos de visualización.
 
-## Edición hacia Oracle
+## Edición y creación hacia Oracle
 
-Los campos editables muestran un lápiz ✎ en las tablas y en la ficha de cada oportunidad (pestañas Resumen, Pruebas, Pagos y Ayuda económica). Al guardar, el portal envía el cambio con la sesión de Oracle de quien edita:
+El portal permite hacer el proceso completo sin entrar a Oracle: cada cambio se guarda en el CRM con la sesión de Oracle de quien edita y la copia local solo se actualiza después de releer el registro en Oracle.
 
-1. Abre la oportunidad en Oracle y comprueba que el control esté habilitado para ese usuario y que el valor actual coincida con el que se veía en el portal (si cambió, queda en **Conflicto**).
-2. Escribe el nuevo valor (texto, fecha, número o selección de la lista de Oracle) y verifica que Oracle no haya modificado otros campos (**efectos secundarios**).
-3. Pulsa *Guardar y Cerrar*, vuelve a abrir el registro y confirma el valor. Solo entonces la copia local cambia y el cambio queda **Confirmado en Oracle** en la trazabilidad.
+### Editar campos
 
-Un resultado incierto nunca se reintenta automáticamente; se verifica desde *Cambios en Oracle*. Las escrituras al mismo registro se serializan. **Se puede editar durante una sincronización**: el cambio espera a que terminen las lecturas en curso, se guarda y después la carga continúa.
+Los campos editables muestran un lápiz ✎ en las tablas y en la ficha de cada oportunidad (pestañas Resumen, Asesor, Contacto y estudios, Pruebas, Entrevista, Pagos y Ayuda económica). Al guardar:
 
-| Grupo | Campos | Por defecto |
-|---|---|---|
-| Comercial | Nombre, Etapa de ventas, Probabilidad, Fecha de cierre, Importe, Origen | editables |
-| Admisión | Ciclo, Año, Estado proceso admisión, Convocatoria PA, Prueba de admisión, Fecha PA, Tipo de prueba, Proceso PAA, Convenio PA, Entrevista | editables |
-| Ayuda y pagos | Asistencia económica, Tipo AE 1/2, % solicitado AE 1/2, Estatus, Comentarios, Límite de papelería, Razón de retraso de matrícula, Cierre reserva de cupo | editables |
-| Decisiones académicas y de beca | Resolución, puntajes, promedio, % otorgado AE 1/2, Aceptación | solo con `HUB_EDIT_FIELDS=all` o lista explícita |
+1. Se abre la oportunidad en Oracle y se comprueba que el control esté habilitado para ese usuario y que el valor actual coincida con el del portal (si cambió, queda en **Conflicto**).
+2. Se escribe el nuevo valor (texto, fecha, número, correo, Sí/No o selección de la lista de Oracle) y se verifica que Oracle no haya modificado otros campos (**efectos secundarios**).
+3. Se pulsa *Guardar y Cerrar*, se vuelve a abrir el registro y se confirma el valor. Solo entonces el cambio queda **Confirmado en Oracle**.
 
-`HUB_EDIT_FIELDS` acepta `default`, `verified` (solo Nombre, Etapa, Probabilidad, Fecha de cierre y Convocatoria PA, probados de punta a punta), `all` o una lista separada por comas. Oracle sigue mandando: si el usuario no tiene el control habilitado en Oracle, el lápiz no aparece y el trabajador rechaza el guardado. Los campos del perfil del contacto (pestaña Contacto y estudios) son de solo consulta. Antes de usarlo en producción conviene validar con los responsables un caso real por cada grupo de campos nuevos.
+Los campos del contacto principal (nombre, apellidos, nacimiento, documento, correo, teléfono, carrera, facultad, estatus lead, mes y tipo de prueba, papelería, interés en ayuda, año de graduación, homeschool, talla) se guardan abriendo el contacto vinculado desde la oportunidad.
+
+Un resultado incierto nunca se reintenta automáticamente; se verifica desde *Cambios en Oracle*. Las escrituras al mismo registro se serializan y **se puede editar durante una sincronización**: el cambio espera a que terminen las lecturas en curso.
+
+| Grupo | Campos |
+|---|---|
+| Comercial | Nombre, Etapa de ventas, Probabilidad, Fecha de cierre, Importe, Origen, Responsable |
+| Admisión | Ciclo, Año, Estado proceso admisión, Convocatoria PA, Prueba de admisión, Fecha PA, Tipo de prueba, Proceso PAA, Convenio PA, Entrevista, Resolución, puntajes y promedio |
+| Ayuda y pagos | Asistencia económica, Tipo AE 1/2, % solicitado y otorgado AE 1/2, Estatus, Aceptación, Comentarios, Límite de papelería, Razón de retraso de matrícula, Cierre reserva de cupo |
+| Contacto principal | Datos personales y académicos del perfil del contacto |
+| Solo con opt-in | ID Campus, ID SCALA y Estado en Campus (los mantienen las integraciones) |
+
+`HUB_EDIT_FIELDS` acepta `default` (todo lo anterior salvo los identificadores de integración), `safe` (además excluye resolución, puntajes y porcentajes otorgados), `verified` (solo Nombre, Etapa, Probabilidad, Fecha de cierre y Convocatoria PA, probados de punta a punta), `all` o una lista separada por comas. Oracle sigue mandando: si el usuario no tiene el control habilitado, el lápiz no aparece y el trabajador rechaza el guardado.
+
+### Crear oportunidades
+
+El botón **+ Nueva oportunidad** abre un formulario con nombre, fecha de cierre (dentro de 2026, el año que cubre la cartera), etapa, probabilidad, contacto principal y, opcionalmente, datos de admisión. El trabajador:
+
+1. Si el aspirante es nuevo, lo registra con *Ventas → Crear contacto* (nombre, apellidos, correo y teléfono móvil).
+2. Abre *Ventas → Crear oportunidad*, completa los datos, elige el contacto principal (debe coincidir con un único contacto) y guarda.
+3. Identifica el registro por su número oficial (en la ficha que abre *Guardar y continuar* o buscando el nombre, que debe ser único) y lo incorpora a la copia local con su detalle.
+4. Guarda los datos de admisión elegidos como cambios verificados.
+
+El avance queda en *Cambios en Oracle → Oportunidades creadas desde el portal*. Si el contacto se creó pero la oportunidad no, el reintento no vuelve a crear el contacto. Si se pulsó guardar pero no se pudo identificar el registro, queda en *Verificación requerida* y no se reintenta.
+
+### Antes de usarlo en producción
+
+Los recorridos de creación y de edición del contacto siguen los formularios inspeccionados en Oracle (ver `docs/recorridos-oracle.md`), pero su guardado real todavía no se ha probado en el tenant. Conviene validar con los responsables un caso real por cada grupo de campos y una creación con un aspirante de prueba, y revisar el resultado en Oracle.
 
 ## Tablero de trazabilidad
 
@@ -84,8 +112,11 @@ Configuración opcional: copiar `.env.example` como `.env` y ajustar. Las variab
 | `HUB_ALLOWED_HOSTS` | vacío | Nombres o IP adicionales con los que se abrirá el portal (además de localhost). |
 | `HUB_COOKIE_SECURE` | `0` | `1` detrás de un proxy HTTPS. |
 | `HUB_LOCAL_ROLE` | `editor` | `reader` para desactivar la edición hacia Oracle. |
-| `HUB_EDIT_FIELDS` | `default` | Campos editables (ver Edición hacia Oracle). |
+| `HUB_EDIT_FIELDS` | `default` | Campos editables (ver Edición y creación hacia Oracle). |
+| `HUB_DETAIL_MAX_AGE_HOURS` | `168` | Antigüedad máxima de una ficha sin cambios antes de releerla (0 = nunca). |
+| `HUB_STALE_VIEW_DAYS` | `7` | Días de la última copia que se muestran al iniciar sesión mientras Oracle los reconfirma (0 = solo lo confirmado). |
 | `HUB_IDLE_MINUTES` / `HUB_SESSION_MAX_HOURS` | `15` / `8` | Inactividad y duración máxima de la sesión. |
+| `HUB_SYNC_MAX_HOURS` | `24` | Tiempo máximo que la sesión sigue activa en segundo plano mientras se descarga la cartera. |
 | `HUB_DETAIL_GRANT_MINUTES` / `HUB_EDIT_GRANT_MINUTES` | `240` | Vigencia de los permisos de detalle y edición observados (15–480). |
 | `HUB_READ_LANES` / `HUB_SCREEN_OPERATIONS` | `2` | Lecturas simultáneas por sesión / pantallas simultáneas del trabajador. |
 

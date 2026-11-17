@@ -9,7 +9,7 @@ window.UnisTrace=(()=>{
   const fmt=n=>Number(n).toLocaleString('es-GT');
   const states={pending_validation:'Pendiente',queued:'En cola',applying:'Guardando en Oracle',uncertain:'Verificación requerida',failed:'No aplicado',conflict:'Conflicto',cancelled:'Cancelado',confirmed:'Confirmado en Oracle'};
   const fieldName=f=>data?.field_labels?.[f]||f;
-  const actions={propose_change:'Cambio solicitado',cancel_change:'Cambio cancelado',oracle_write_verified:'Cambio confirmado en Oracle',save_local_activity:'Actividad local guardada'};
+  const actions={propose_change:'Cambio solicitado',cancel_change:'Cambio cancelado',oracle_write_verified:'Cambio confirmado en Oracle',create_opportunity_requested:'Creación solicitada',oracle_create_verified:'Oportunidad creada en Oracle',save_local_activity:'Actividad local guardada'};
   async function request(path){
     const generation=window.HubAuth.generation;const r=await fetch(path);const d=await r.json();
     if(generation!==window.HubAuth.generation)throw Error('La sesión cambió.');
@@ -88,7 +88,7 @@ window.UnisTrace=(()=>{
     if(!active()||!data)return;
     const list=rows(),k=data.kpis,ct=crossTab(list),dims=data.dimensions;
     const dimSelect=(id,current)=>`<select id="${id}">${dims.map(d=>`<option value="${d.key}" ${d.key===current?'selected':''}>${esc(d.label)}</option>`).join('')}</select>`;
-    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">TRAZABILIDAD · COPIA LOCAL DE ORACLE</span><h1>Cruces y trazabilidad de oportunidades.</h1><p>Calculado sobre las oportunidades y campos que tus permisos de Oracle permiten ver. Última carga: ${esc(time(data.loaded_at))}${['pending','running'].includes(data.job?.state)?' · sincronización en curso':''}</p></div><button id="trace-refresh">Actualizar</button></div>
+    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">TRAZABILIDAD · COPIA LOCAL DE ORACLE</span><h1>Cruces y trazabilidad de oportunidades.</h1><p>Calculado sobre las oportunidades y campos que tus permisos de Oracle permiten ver. Última carga: ${esc(time(data.loaded_at))}${['pending','running'].includes(data.job?.state)?' · sincronización en curso':''}${k.unconfirmed?` · ${fmt(k.unconfirmed)} de la última copia por reconfirmar con Oracle`:''}</p></div><button id="trace-refresh">Actualizar</button></div>
       <div class="metrics">
         <div class="metric accent"><div class="metric-label">Oportunidades visibles</div><strong>${fmt(k.opportunities)}</strong><small>Inventario consultado</small></div>
         <div class="metric"><div class="metric-label">Con detalle extraído</div><strong>${pct(k.with_detail,k.opportunities)}%</strong><small>${fmt(k.with_detail)} fichas con pruebas, ayuda y matrícula</small></div>

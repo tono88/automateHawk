@@ -1,4 +1,5 @@
 """Read-only, volatile Oracle read model. Never merges real rows with demo data."""
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
 from secrets import token_urlsafe
@@ -6,7 +7,7 @@ from threading import RLock
 from time import monotonic
 from .domain import ValidationError, ConflictError
 import os
-from .catalog import DETAIL_FIELDS, EDIT_FIELDS, validate_change
+from .catalog import DETAIL_FIELDS, EDIT_FIELDS, validate_change, validate_creation
 
 EDIT_DETAIL_MAX_AGE=int(os.environ.get('HUB_EDIT_DETAIL_MAX_AGE_MINUTES','480'))*60
 
@@ -41,15 +42,27 @@ class OracleReadStore:
         self.detail_states={}
         self.settings={'enabled':False,'interval_minutes':15,'detail_ttl_minutes':30,'reconcile_hours':24}
         self.listing_coverage=None
+        # Incremental refresh for the browser: a revision per record and per detail.
+        self.epoch=token_urlsafe(8);self.revision=0;self._dirty=True;self._marker=None
+        self._row_fp={};self._detail_fp={};self._state_fp={}
+        self.row_rev={};self.detail_rev={};self.state_rev={};self.members_rev=0
         if repository:
             self._reload()
             self.settings.update(repository.settings().get('sync',{}))
             self.listing_coverage=repository.settings().get('listing_coverage:'+getattr(repository,'principal','local'))
 
     def _reload(self):
-        state=self.repository.load()
-        self.records=state['records'];self.loaded_at=state['loaded_at'];self.scope=state['scope'];self.details=state['details'];self.detail_states=state.get('detail_states',{})
-        if hasattr(self.repository,'read_progress'):self.read_outcomes=self.repository.read_progress()
+        with self.lock:
+            marker=self.repository.fingerprint() if hasattr(self.repository,'fingerprint') else None
+            state=self.repository.load()
+            self.records=state['records'];self.loaded_at=state['loaded_at'];self.scope=state['scope'];self.details=state['details'];self.detail_states=state.get('detail_states',{})
+            if hasattr(self.repository,'read_progress'):self.read_outcomes=self.repository.read_progress()
+            self._marker=marker;self._dirty=True
+
+    def refresh_if_changed(self):
+        """Reloads the scoped copy only when the database changed (one light query per request)."""
+        if not self.repository or not hasattr(self.repository,'fingerprint'):return self._reload() if self.repository else None
+        if self.repository.fingerprint()!=getattr(self,'_marker',None):self._reload()
 
     def heartbeat(self):
         with self.lock:
@@ -78,7 +91,8 @@ class OracleReadStore:
             self.job=dict(id=token_urlsafe(12),kind=kind,opportunity_number=number,state='pending',message='Esperando al trabajador de navegador local.',started_at=None,finished_at=None)
             if kind=='details_batch':
                 self.read_seconds=[]
-                self.batch_numbers=[r['opportunity_number'] for r in self.records if self.needs_detail(r['opportunity_number']) or self.read_outcomes.get(r['opportunity_number'],{}).get('permission_refresh_required')]
+                # Unconfirmed rows (last copy) wait for the inventory: Oracle must confirm them first.
+                self.batch_numbers=[r['opportunity_number'] for r in self.records if not r.get('_unconfirmed') and (self.needs_detail(r['opportunity_number']) or self.read_outcomes.get(r['opportunity_number'],{}).get('permission_refresh_required'))]
                 self.batch_numbers.sort(key=lambda n:{'failed':1,'partial':2}.get(self.read_outcomes.get(n,{}).get('state'),0))
                 self.batch_done=set();self.batch_failed=set();self.batch_partial=set()
                 self.batch_inflight=set()
@@ -102,7 +116,7 @@ class OracleReadStore:
                   'layout':'No se reconoció la tabla de Oracle. Se conserva la carga anterior.',
                   'timeout':'Oracle no terminó la consulta. Se conserva la carga anterior.'}
             if not self.job: self.request()
-            self.job.update(state='failed',message=safe.get(message,'No se pudo completar la consulta. Se conserva la carga anterior.'),finished_at=datetime.now(timezone.utc).isoformat())
+            self.job.update(state='failed',failure_code=message,message=safe.get(message,'No se pudo completar la consulta. Se conserva la carga anterior.'),finished_at=datetime.now(timezone.utc).isoformat())
             self.failure_count+=1
             self.retry_after=monotonic()+(900 if message=='session' else min(60*2**min(self.failure_count-1,5),1800))
 
@@ -146,7 +160,7 @@ class OracleReadStore:
                                  retry_in_seconds=max(0,int(self.retry_after-monotonic())),
                                  detail_count=len(self.details),extraction=self.extraction_progress(),performance=self.performance(),
                                  source_limits={'contacts_unavailable':sum(self.read_outcomes.get(r['opportunity_number'],{}).get('error_code')=='contact-unavailable' for r in self.records)},
-                                 listing_coverage=self.listing_coverage,
+                                 listing_coverage=self.listing_coverage,unconfirmed=self.unconfirmed(),
                                  database=self.repository.summary() if self.repository else None))
 
     def record_listing_coverage(self,coverage):
@@ -187,10 +201,45 @@ class OracleReadStore:
         with self.lock:
             self.job.update(state='paused',message='Carga pausada; el avance quedó guardado.',finished_at=datetime.now(timezone.utc).isoformat())
 
+    def _stamp(self):
+        """Assigns a new revision to every record, detail or read state that changed."""
+        if not self._dirty:return
+        rev=self.revision+1;changed=False;numbers=set()
+        for r in self.records:
+            n=r['opportunity_number'];numbers.add(n)
+            fp=json.dumps(r,sort_keys=True,default=str)
+            if self._row_fp.get(n)!=fp:self._row_fp[n]=fp;self.row_rev[n]=rev;changed=True
+            d=self.details.get(n)
+            dfp=None if d is None else json.dumps([d.get('loaded_at'),d.get('unconfirmed'),sorted(k for k,v in (d.get('capabilities') or {}).items() if v),len(d.get('fields') or {})],default=str)
+            if self._detail_fp.get(n,'∅')!=dfp:self._detail_fp[n]=dfp;self.detail_rev[n]=rev;changed=True
+            sfp=json.dumps([self.detail_states.get(n),self.read_outcomes.get(n)],sort_keys=True,default=str)
+            if self._state_fp.get(n)!=sfp:self._state_fp[n]=sfp;self.state_rev[n]=rev;changed=True
+        gone=set(self._row_fp)-numbers
+        for n in gone:
+            for m in (self._row_fp,self._detail_fp,self._state_fp,self.row_rev,self.detail_rev,self.state_rev):m.pop(n,None)
+        if gone:self.members_rev=rev;changed=True
+        if changed:self.revision=rev
+        self._dirty=False
+
+    def delta(self,since=None,epoch=None):
+        """Full snapshot, or only what changed after the client's revision of this same store."""
+        with self.lock:
+            self._stamp()
+            if since is None or epoch!=self.epoch or since>self.revision:
+                return dict(self.snapshot(),revision=self.revision,epoch=self.epoch,delta=False)
+            out=dict(self.status(),revision=self.revision,epoch=self.epoch,delta=True,
+                records=[deepcopy(r) for r in self.records if self.row_rev.get(r['opportunity_number'],0)>since],
+                details={n:deepcopy(d) for n,d in self.details.items() if self.detail_rev.get(n,0)>since},
+                detail_states={n:v for n,v in self.detail_states.items() if self.state_rev.get(n,0)>since},
+                read_states={r['opportunity_number']:deepcopy(self.read_outcomes.get(r['opportunity_number'],{})) for r in self.records if self.state_rev.get(r['opportunity_number'],0)>since},
+                removed_details=[n for n,rev in self.detail_rev.items() if rev>since and n not in self.details])
+            if self.members_rev>since:out['numbers']=[r['opportunity_number'] for r in self.records]
+            return out
+
     def snapshot(self):
         with self.lock: return dict(**self.status(),records=deepcopy(self.records),details=deepcopy(self.details),detail_states=deepcopy(self.detail_states),read_states={r['opportunity_number']:deepcopy(self.read_outcomes.get(r['opportunity_number'],{})) for r in self.records})
 
-    def ingest_detail(self,body):
+    def _detail_payload(self,body):
         if not isinstance(body,dict) or set(body)-{'opportunity_number','fields','capabilities','activities','schema_version','pending_modules','module_reason','validation_field'}:raise ValidationError('Detalle inválido.')
         if type(body.get('schema_version',1))!=int or body.get('schema_version',1) not in (1,2):raise ValidationError('Versión de detalle inválida.')
         if body.get('validation_field','') not in ('',*DETAIL_FIELDS):raise ValidationError('Campo de validación inválido.')
@@ -208,6 +257,10 @@ class OracleReadStore:
         for row in activity['rows']:
             if not isinstance(row,dict) or set(row)-allowed or any(not isinstance(v,str) or len(v)>1000 for v in row.values()):raise ValidationError('Actividad inválida.')
         payload={'schema_version':body.get('schema_version',1),'fields':fields,'capabilities':caps,'activities':activity,'source':'oracle-ui','partial':True,'pending_modules':modules,'module_reason':body.get('module_reason',''),'validation_field':body.get('validation_field','')}
+        return number,payload,modules,fields
+
+    def ingest_detail(self,body):
+        number,payload,modules,fields=self._detail_payload(body)
         with self.lock:
             if self.repository:self.repository.save_detail(number,payload);self._reload()
             else:self.details[number]=dict(payload,loaded_at=datetime.now(timezone.utc).isoformat())
@@ -219,6 +272,33 @@ class OracleReadStore:
             else:self.job.update(state='completed',message='Detalle consultado y guardado en la copia local.',finished_at=datetime.now(timezone.utc).isoformat())
             self.failure_count=0;self.retry_after=0
         return self.status()
+
+    def pending_details(self):
+        """True when some visible opportunity has no completed detail or Oracle reported a change."""
+        with self.lock:
+            return any(not r.get('_unconfirmed') and (self.needs_detail(r['opportunity_number']) or self.read_outcomes.get(r['opportunity_number'],{}).get('permission_refresh_required')) for r in self.records)
+
+    def resume_pending(self):
+        """A download interrupted by a transient Oracle failure that still has work left."""
+        with self.lock:
+            job=self.job or {}
+            if job.get('state')!='failed' or job.get('failure_code') not in ('timeout','layout','empty'):return False
+            if job.get('kind') not in ('opportunities','details_batch'):return False
+            if not (self.listing_coverage or {}).get('complete') or self.unconfirmed():return True
+            # Records that already failed three reads are left for review, not retried forever.
+            return any(not r.get('_unconfirmed') and self.read_outcomes.get(r['opportunity_number'],{}).get('state')!='failed'
+                       and self.needs_detail(r['opportunity_number']) for r in self.records)
+
+    def resume(self):
+        """Restarts the interrupted download once its back-off has elapsed."""
+        with self.lock:
+            if not self.resume_pending() or self.retry_after>monotonic():return None
+            if not (self.listing_coverage or {}).get('complete') or self.unconfirmed():return self.request('opportunities')
+            return self.request('details_batch')
+
+    def unconfirmed(self):
+        """Rows shown from the last copy that Oracle has not re-confirmed in this session yet."""
+        with self.lock:return sum(bool(r.get('_unconfirmed')) for r in self.records)
 
     def needs_detail(self,number):
         outcome=self.read_outcomes.get(number,{})
@@ -241,6 +321,7 @@ class OracleReadStore:
         old=self.read_outcomes.get(number,{})
         current=next((r.get('_version') for r in self.records if r['opportunity_number']==number),None)
         changed=state=='completed' and version is not None and current is not None and version!=current
+        self._dirty=True
         self.read_outcomes[number]={'state':state,'schema_version':2,'attempts':old.get('attempts',0)+attempts,'error_code':error_code,'source_version':version,'needs_refresh':changed}
 
     def read_attempt(self,number,attempt):
@@ -290,6 +371,32 @@ class OracleReadStore:
         if (datetime.now(timezone.utc)-loaded).total_seconds()>EDIT_DETAIL_MAX_AGE:raise ConflictError('Vuelve a consultar el detalle en Oracle antes de editar este campo.')
         return self.repository.propose(number,field,value,body.get('version'),self.actor)
 
+    def ingest_created(self,row,detail=None):
+        """Adds an opportunity just created and verified in Oracle, without touching the sync job."""
+        if not isinstance(row,dict) or set(row)-set(FIELDS):raise ValidationError('Campo no permitido.')
+        clean={k:str(row.get(k) or '').strip()[:1000] for k in FIELDS if k in row}
+        number=clean.get('opportunity_number','')
+        if not number or len(number)>80:raise ValidationError('Número oficial vacío.')
+        with self.lock:
+            if not self.repository:raise PermissionError()
+            self.repository.observed_fields={number:list(clean)}
+            self.repository.save_snapshot([clean],'Oportunidad creada desde el portal')
+            self._reload()
+            if detail:
+                _,payload,modules,_=self._detail_payload(dict(detail,opportunity_number=number))
+                self.repository.save_detail(number,payload)
+                self._reload()
+                self._read_outcome(number,'reading',0)
+                self._read_outcome(number,'partial' if modules else 'completed')
+            return next((r for r in self.records if r['opportunity_number']==number),None)
+
+    def propose_creation(self,body):
+        if self.role!='editor' or not self.repository:raise PermissionError()
+        payload=validate_creation(body)
+        if any((r.get('name') or '').strip().casefold()==payload['name'].casefold() for r in self.records):
+            raise ConflictError('Ya existe una oportunidad con ese nombre en tu cartera. Usa un nombre distinto para poder identificarla en Oracle.')
+        return self.repository.propose_creation(payload,self.actor)
+
     def save_settings(self,body):
         if self.role!='editor' or not self.repository:raise PermissionError()
         if set(body)-{'enabled','interval_minutes'} or type(body.get('enabled'))!=bool or type(body.get('interval_minutes'))!=int or not 5<=body['interval_minutes']<=240:raise ValidationError('Intervalo permitido: de 5 a 240 minutos.')
@@ -303,7 +410,8 @@ class OracleReadStore:
             if not self.settings['enabled'] or not self.worker_seen or monotonic()-self.worker_seen>=90:return None
             if self.job and self.job['state'] in ('pending','running','paused'):return None
             if self.listing_coverage and not self.listing_coverage.get('complete'):return self.request()
-            new_details=any(not self.read_outcomes.get(r['opportunity_number'],{}).get('state')
+            if any(r.get('_unconfirmed') for r in self.records):return self.request()
+            new_details=any(not r.get('_unconfirmed') and not self.read_outcomes.get(r['opportunity_number'],{}).get('state')
                 and self.needs_detail(r['opportunity_number']) for r in self.records)
             if new_details or any(r.get('needs_refresh') for r in self.read_outcomes.values()):return self.request('details_batch')
             observed=(self.listing_coverage or {}).get('finished_at') or self.loaded_at

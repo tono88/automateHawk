@@ -2,7 +2,7 @@
 window.UnisOracleLive = (() => {
   let state, catalog, changes = [], root, view = 'base', query = '', cycle = '', advisor = '',
     stage = '', oracleStatus = '', segment = '', faculty = '', testDate = '', page = 1, selected = null, module = 'general',
-    inline = null, drawerEdit = null, lastJob = null, error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, cohort = '', detailFilter = '';
+    inline = null, drawerEdit = null, lastJob = null, creations = [], error = '', pageSize = 12, sortKey = '', sortDirection = 'asc', activities = [], activitySchemas = {}, cohort = '', detailFilter = '';
   const labels = {segment:'Segmento',name:'Nombre de oportunidad',owner:'Asesor',stage:'Etapa',probability:'Probabilidad',close_date:'Fecha de cierre'};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const time = value => value ? new Date(value).toLocaleString('es-GT', {timeZone:'America/Guatemala'}) : 'Sin consultar';
@@ -34,12 +34,25 @@ window.UnisOracleLive = (() => {
   async function refresh() {
     if(refreshFlight)return refreshFlight;
     const work=(async()=>{
-      const workspace=await request('/api/oracle/workspace');
-      state=workspace.snapshot;lastJob=state.job;changes=workspace.changes;activities=workspace.activities;activitySchemas=workspace.schemas;
+      // After the first load only records, details and read states that changed are sent.
+      const since=state&&state.revision!=null?`?since=${state.revision}&epoch=${encodeURIComponent(state.epoch)}`:'';
+      const workspace=await request('/api/oracle/workspace'+since);
+      state=workspace.snapshot.delta&&state?merge(state,workspace.snapshot):workspace.snapshot;lastJob=state.job;changes=workspace.changes;creations=workspace.creations||[];activities=workspace.activities;activitySchemas=workspace.schemas||activitySchemas;
       if (!catalog) catalog = await request('/api/oracle/catalog');
     })();
     refreshFlight=work;
     try{return await work;}finally{if(refreshFlight===work)refreshFlight=null;}
+  }
+  function merge(current,delta) {
+    const index=new Map(current.records.map((r,i)=>[r.opportunity_number,i]));let added=false;
+    for(const r of delta.records){const i=index.get(r.opportunity_number);if(i===undefined){current.records.push(r);added=true;}else current.records[i]=r;}
+    if(delta.numbers){const keep=new Set(delta.numbers);current.records=current.records.filter(r=>keep.has(r.opportunity_number));
+      for(const map of ['details','detail_states','read_states'])for(const n of Object.keys(current[map]||{}))if(!keep.has(n))delete current[map][n];}
+    if(added)current.records.sort((a,b)=>a.opportunity_number.localeCompare(b.opportunity_number));
+    Object.assign(current.details,delta.details);Object.assign(current.detail_states,delta.detail_states);Object.assign(current.read_states,delta.read_states);
+    for(const n of delta.removed_details||[])delete current.details[n];
+    for(const [key,value] of Object.entries(delta))if(!['records','details','detail_states','read_states','numbers','removed_details'].includes(key))current[key]=value;
+    return current;
   }
   async function render(target) {
     root=target;const generation=window.HubAuth.generation;
@@ -64,8 +77,9 @@ window.UnisOracleLive = (() => {
   function draw() {
     if(!window.HubAuth.isAuthenticated()||!root || !document.querySelector('[data-mode="live"].active')) return;
     const filtered=rows(), busy=['pending','running'].includes(state.job?.state);
-    const outstanding=changes.filter(c=>['pending_validation','queued','approved','applying','uncertain'].includes(c.state)).length;
-    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">ADMISIONES · UNIS</span><h1>Admisiones, en un solo lugar.</h1><p>Aspirantes, pruebas, entrevistas y matrícula en una misma cartera.</p></div><button class="primary" id="op-sync" ${!state.worker_online||busy?'disabled':''}>${busy?'Consulta en curso…':'Actualizar desde Oracle'}</button></div>
+    const outstanding=changes.filter(c=>['pending_validation','queued','approved','applying','uncertain'].includes(c.state)).length+creations.filter(c=>['pending_validation','queued','applying','uncertain'].includes(c.state)).length;
+    root.innerHTML=`<div class="page-heading"><div><span class="eyebrow">ADMISIONES · UNIS</span><h1>Admisiones, en un solo lugar.</h1><p>Aspirantes, pruebas, entrevistas y matrícula en una misma cartera.</p></div><div class="heading-actions">${state.can_propose?'<button id="op-create">+ Nueva oportunidad</button>':''}<button class="primary" id="op-sync" ${!state.worker_online||busy?'disabled':''}>${busy?'Consulta en curso…':'Actualizar desde Oracle'}</button></div></div>
+      ${state.unconfirmed?`<div class="notice stale-notice" role="status"><strong>Mostrando la última copia.</strong> ${state.unconfirmed} de ${state.records.length} oportunidades se están reconfirmando con Oracle${busy?'':' (se reconfirman con la próxima actualización)'}. Ya puedes consultarlas; la edición se habilita en cada registro cuando Oracle lo confirma. Las que Oracle ya no te muestre desaparecerán al terminar.</div>`:''}
       <div class="source-strip"><span>${badge(state.storage==='postgresql'?'Oracle · copia local':'Copia temporal',state.storage==='postgresql'?'green':'orange')}</span><span>Última carga: ${esc(time(state.loaded_at))}</span><span>${state.worker_online?'Conexión a Oracle activa':'Conexión a Oracle pendiente'}</span><span>${state.can_propose?'Gestión habilitada según permisos':'Acceso de consulta'}</span></div>
       <p class="subtle">Consulta parcial · ${esc(state.scope)}. Los datos disponibles se muestran completos. Una raya indica un campo sin valor o pendiente de actualización; su descripción distingue cada caso.</p>
       <div class="metrics ops-metrics"><div class="metric accent"><div class="metric-label">Oportunidades</div><strong>${state.records.length}</strong><small>Identificadas por número oficial</small></div><div class="metric"><div class="metric-label">Fichas extraídas</div><strong>${state.extraction?.completed??0}</strong><small>${state.records.length?Math.round(100*(state.extraction?.completed??0)/state.records.length):0}% de la cartera consultada</small></div><div class="metric"><div class="metric-label">Cambios por confirmar</div><strong>${outstanding}</strong><small>Aún no confirmadas en Oracle</small></div><div class="metric"><div class="metric-label">Por extraer</div><strong>${state.extraction?.pending??state.records.length}</strong><small>Incluye lecturas por revisar</small></div></div>
@@ -76,6 +90,9 @@ window.UnisOracleLive = (() => {
       ${error?`<div class="notice" role="alert">${esc(error)}</div>`:''}
       ${view==='financial'?coverageNote(filtered):''}${['contacts','tests','registration','interviews','enrollment'].includes(view)?admissionsPanel(filtered):view==='local-activities'?localActivityView(filtered):view==='changes'?queueView():view==='sync'?syncView():view==='roadmap'?roadmapView():view==='summary'?filters()+coverageNote(filtered)+summaryView(filtered)+admissionsSummary(filtered):tableView(filtered)}`;
     root.querySelector('#op-sync').onclick=()=>enqueue('opportunities');
+    root.querySelector('#op-create')?.addEventListener('click',openCreate);
+    root.querySelectorAll('[data-retry-creation]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{await request('/api/oracle/opportunities/retry',{id:button.dataset.retryCreation});await refresh();draw();}catch(e){error=e.message;draw();}});
+    root.querySelectorAll('[data-cancel-creation]').forEach(button=>button.onclick=async()=>{try{await request('/api/oracle/opportunities/cancel',{id:button.dataset.cancelCreation});await refresh();draw();}catch(e){error=e.message;draw();}});
     root.querySelector('#op-enrich').onclick=()=>enqueue('details_batch');
     const pauseButton=root.querySelector('#op-pause');if(pauseButton)pauseButton.onclick=async()=>{await request('/api/oracle/jobs/pause',{});await refresh();draw();};
     root.querySelectorAll('[data-view]').forEach(button=>button.onclick=()=>{view=button.dataset.view;testDate='';page=1;sortKey='';sortDirection='asc';inline=null;error='';draw();});
@@ -127,6 +144,8 @@ window.UnisOracleLive = (() => {
   function editorControl(row,key) {
     const kind=catalog.edit_kinds?.[key]||'text', current=String(value(row,key)??'');
     if(key==='stage')return `<select name="value" aria-label="Nuevo valor de ${esc(fieldLabel(key))}">${STAGES.map(s=>`<option ${s===current?'selected':''}>${s}</option>`).join('')}</select>`;
+    if(kind==='boolean')return `<select name="value" aria-label="Nuevo valor de ${esc(fieldLabel(key))}">${['Sí','No'].map(v=>`<option ${v===current?'selected':''}>${v}</option>`).join('')}</select>`;
+    if(kind==='email')return `<input name="value" type="email" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(current)}" maxlength="300">`;
     if(kind==='date')return `<input name="value" type="date" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(isoDate(current))}">`;
     if(kind==='number')return `<input name="value" type="text" inputmode="decimal" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(current)}" ${['name','probability'].includes(key)?'required':''}>`;
     if(kind==='choice'){const list='dl-'+key;return `<input name="value" list="${list}" aria-label="Nuevo valor de ${esc(fieldLabel(key))}" value="${esc(current)}" placeholder="Valor exacto de la lista de Oracle"><datalist id="${list}">${observedValues(key).map(v=>`<option value="${esc(v)}">`).join('')}</datalist>`;}
@@ -175,7 +194,7 @@ window.UnisOracleLive = (() => {
     const ordered=window.UnisTableTools.sort(filtered,sortKey,sortDirection,sortValue);
     const paging=window.UnisTableTools.paginate(ordered,pageSize,page);page=paging.page;const pages=paging.pages;
     const caption=overrideCaption||catalog.views.find(v=>v.id===view);
-    return `<section class="table-panel"><div class="table-toolbar"><div><h2>${esc(caption.title)}</h2><span class="count-pill">${filtered.length}</span></div><span class="subtle">Haz clic en un dato para abrir su módulo</span></div><p class="view-caption">${esc(caption.description)} ${view==='payments'?'Un importe comercial no demuestra que exista un pago confirmado.':''}</p>${filters()}<div class="table-wrap"><table><thead><tr>${identityHeader()}${cols.map(c=>sortHeader(c[0],c[1])).join('')}${sortHeader('local_activities','ACTIVIDADES LOCALES')}${sortHeader('_last_seen','ÚLTIMA OBSERVACIÓN')}</tr></thead><tbody>${paging.rows.map(row=>`<tr><td><button class="name-button" data-detail="${esc(row.opportunity_number)}" data-module="general">${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</button><span class="record-id">${esc(row.opportunity_number)}</span></td>${cols.map(([key,,section])=>`<td>${cell(row,key,section)}</td>`).join('')}<td>${activityActions(row.opportunity_number)}<span class="record-id">${activities.filter(a=>a.opportunity_number===row.opportunity_number).length} registros locales</span></td><td>${esc(time(row._last_seen||state.loaded_at))}<span class="record-id">${esc(detailStateLabel(row.opportunity_number))}</span></td></tr>`).join('')||`<tr><td class="empty" colspan="${cols.length+3}">No hay registros con estos filtros.</td></tr>`}</tbody></table></div><div class="pagination"><span role="status">${paging.start}–${paging.end} de ${filtered.length} oportunidades</span><label class="page-size">Filas por página<select id="op-page-size" aria-label="Filas por página">${[12,25,50,100,250,'all'].map(n=>`<option value="${n}" ${String(n)===String(pageSize)?'selected':''}>${n==='all'?'Todas':n}</option>`).join('')}</select></label><div><button id="op-prev" aria-label="Página anterior" ${page===1?'disabled':''}>‹</button> ${page}/${pages}<button id="op-next" aria-label="Página siguiente" ${page===pages?'disabled':''}>›</button></div></div></section>`;
+    return `<section class="table-panel"><div class="table-toolbar"><div><h2>${esc(caption.title)}</h2><span class="count-pill">${filtered.length}</span></div><span class="subtle">Haz clic en un dato para abrir su módulo</span></div><p class="view-caption">${esc(caption.description)} ${view==='payments'?'Un importe comercial no demuestra que exista un pago confirmado.':''}</p>${filters()}<div class="table-wrap"><table><thead><tr>${identityHeader()}${cols.map(c=>sortHeader(c[0],c[1])).join('')}${sortHeader('local_activities','ACTIVIDADES LOCALES')}${sortHeader('_last_seen','ÚLTIMA OBSERVACIÓN')}</tr></thead><tbody>${paging.rows.map(row=>`<tr><td><button class="name-button" data-detail="${esc(row.opportunity_number)}" data-module="general">${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</button><span class="record-id">${esc(row.opportunity_number)}</span>${row._unconfirmed?'<span class="record-id pending-label" title="Se muestra la última copia; Oracle aún no lo reconfirma en esta sesión.">Por reconfirmar</span>':''}</td>${cols.map(([key,,section])=>`<td>${cell(row,key,section)}</td>`).join('')}<td>${activityActions(row.opportunity_number)}<span class="record-id">${activities.filter(a=>a.opportunity_number===row.opportunity_number).length} registros locales</span></td><td>${esc(time(row._last_seen||state.loaded_at))}<span class="record-id">${esc(detailStateLabel(row.opportunity_number))}</span></td></tr>`).join('')||`<tr><td class="empty" colspan="${cols.length+3}">No hay registros con estos filtros.</td></tr>`}</tbody></table></div><div class="pagination"><span role="status">${paging.start}–${paging.end} de ${filtered.length} oportunidades</span><label class="page-size">Filas por página<select id="op-page-size" aria-label="Filas por página">${[12,25,50,100,250,'all'].map(n=>`<option value="${n}" ${String(n)===String(pageSize)?'selected':''}>${n==='all'?'Todas':n}</option>`).join('')}</select></label><div><button id="op-prev" aria-label="Página anterior" ${page===1?'disabled':''}>‹</button> ${page}/${pages}<button id="op-next" aria-label="Página siguiente" ${page===pages?'disabled':''}>›</button></div></div></section>`;
   }
   function bindTable() {
     root.querySelectorAll('[data-sort]').forEach(button=>button.onclick=()=>{sortDirection=sortKey===button.dataset.sort&&sortDirection==='asc'?'desc':'asc';sortKey=button.dataset.sort;page=1;inline=null;draw();});
@@ -208,7 +227,7 @@ window.UnisOracleLive = (() => {
     const dialog=ensureDrawer(), tabs=[['general','Resumen'],['advisor','Asesor'],['contact','Contacto y estudios'],['tests','Pruebas'],['interviews','Entrevista'],['activities','Citas y tareas'],['payments','Pagos'],['financial','Ayuda económica']];
     const fields=Object.entries(catalog.fields).filter(([,definition])=>definition.module===module);
     const currentJob=state.job,busy=['pending','running'].includes(currentJob?.state);
-    dialog.innerHTML=`<div class="dialog-head"><div><span class="eyebrow">DETALLE DE ORACLE · COPIA LOCAL</span><h2>${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</h2><p class="subtle">${esc(selected)} · ${esc(time(detail?.loaded_at))}</p></div><button id="crm-close" class="icon-button" aria-label="Cerrar detalle">×</button></div><div class="ops-tabs">${tabs.map(([id,title])=>`<button data-section="${id}" class="${id===module?'selected':''}">${title}</button>`).join('')}</div><div class="notice">${detail?'Permisos y valores observados en la cuenta del trabajador.':'Aún no se ha consultado el detalle de esta oportunidad.'} Los cambios propuestos quedan separados del valor confirmado.</div>
+    dialog.innerHTML=`<div class="dialog-head"><div><span class="eyebrow">DETALLE DE ORACLE · COPIA LOCAL</span><h2>${esc([row.first_name,row.last_name].filter(Boolean).join(' ')||row.name)}</h2><p class="subtle">${esc(selected)} · ${esc(time(detail?.loaded_at))}${row._unconfirmed||detail?.unconfirmed?' · última copia, por reconfirmar con Oracle':''}</p></div><button id="crm-close" class="icon-button" aria-label="Cerrar detalle">×</button></div><div class="ops-tabs">${tabs.map(([id,title])=>`<button data-section="${id}" class="${id===module?'selected':''}">${title}</button>`).join('')}</div><div class="notice">${detail?'Permisos y valores observados en la cuenta del trabajador.':'Aún no se ha consultado el detalle de esta oportunidad.'} Los cambios propuestos quedan separados del valor confirmado.</div>
       ${module==='activities'?activityPanel(detail)+localActivityPanel(selected):`<div class="detail-grid">${fields.map(([key,definition])=>{
         const available=key in row||key in (detail?.fields||{});let text=available?(value(row,key)||'Sin valor registrado en Oracle'):fieldHint(row,key);
         const permission=detail?.capabilities?.[key],change=pending(selected,key);
@@ -280,7 +299,53 @@ window.UnisOracleLive = (() => {
   function queueView() {
     const titles={pending_validation:'Pendiente',queued:'En cola',applying:'Guardando en Oracle',uncertain:'Verificación requerida',failed:'No aplicado',conflict:'Conflicto',cancelled:'Cancelado',confirmed:'Confirmado en Oracle'};
     const reasons={permission:'Oracle no habilita este campo.',conflict:'El valor cambió en Oracle.',validation:'Oracle no aceptó el valor en el formulario.','side-effects':'Oracle propuso otros cambios; requiere revisión.','write-not-started':'No se inició el guardado.',session:'La sesión terminó.',unavailable:'No se pudo determinar el resultado.','server-restarted':'Se reinició el servicio; verifica el resultado.','reconciled-different':'Oracle tiene un valor diferente.',uncertain:'El resultado debe verificarse antes de reintentar.'};
-    return `<section class="table-panel"><div class="table-toolbar"><h2>Cambios y confirmaciones de Oracle</h2></div><div class="notice">Los cambios se guardan en Oracle con tu sesión, también durante una sincronización (esperan a que terminen las lecturas en curso). Antes de guardar se comprueba el permiso y el valor actual; el valor confirmado se actualiza al releer Oracle. Un resultado incierto no se reintenta automáticamente. Citas, seguimientos e informes continúan como formularios locales.</div><div class="table-wrap"><table><thead><tr><th>OPORTUNIDAD</th><th>CAMPO</th><th>VALOR ANTERIOR</th><th>CAMBIO SOLICITADO</th><th>ESTADO</th><th>ACCIÓN</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(c.opportunity_number)}</td><td>${esc(fieldLabel(c.field))}</td><td>${esc(c.old_value)}</td><td>${esc(c.new_value)}</td><td>${badge(titles[c.state]||c.state,c.state==='confirmed'?'green':['uncertain','failed','conflict'].includes(c.state)?'orange':'gray')}<span class="record-id">${esc(reasons[c.result_code]||'')}</span></td><td>${state.can_propose&&c.state==='uncertain'?`<button class="tiny-button" data-reconcile-change="${esc(c.id)}">Verificar en Oracle</button>`:''}${state.can_propose&&['pending_validation','conflict'].includes(c.state)?`<button class="tiny-button" data-cancel-change="${esc(c.id)}">Cancelar</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay cambios registrados con tu usuario.</td></tr>'}</tbody></table></div></section>`;
+    return `<section class="table-panel"><div class="table-toolbar"><h2>Cambios y confirmaciones de Oracle</h2></div><div class="notice">Los cambios se guardan en Oracle con tu sesión, también durante una sincronización (esperan a que terminen las lecturas en curso). Antes de guardar se comprueba el permiso y el valor actual; el valor confirmado se actualiza al releer Oracle. Un resultado incierto no se reintenta automáticamente. Citas, seguimientos e informes continúan como formularios locales.</div><div class="table-wrap"><table><thead><tr><th>OPORTUNIDAD</th><th>CAMPO</th><th>VALOR ANTERIOR</th><th>CAMBIO SOLICITADO</th><th>ESTADO</th><th>ACCIÓN</th></tr></thead><tbody>${changes.map(c=>`<tr><td>${esc(c.opportunity_number)}</td><td>${esc(fieldLabel(c.field))}</td><td>${esc(c.old_value)}</td><td>${esc(c.new_value)}</td><td>${badge(titles[c.state]||c.state,c.state==='confirmed'?'green':['uncertain','failed','conflict'].includes(c.state)?'orange':'gray')}<span class="record-id">${esc(reasons[c.result_code]||'')}</span></td><td>${state.can_propose&&c.state==='uncertain'?`<button class="tiny-button" data-reconcile-change="${esc(c.id)}">Verificar en Oracle</button>`:''}${state.can_propose&&['pending_validation','conflict'].includes(c.state)?`<button class="tiny-button" data-cancel-change="${esc(c.id)}">Cancelar</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay cambios registrados con tu usuario.</td></tr>'}</tbody></table></div></section>${creationsPanel()}`;
+  }
+  function creationsPanel() {
+    if(!creations.length)return '';
+    const titles={pending_validation:'Pendiente',queued:'En cola',applying:'Creando en Oracle',uncertain:'Verificación requerida',failed:'No creada',cancelled:'Cancelada',confirmed:'Creada en Oracle'};
+    const reasons={'ambiguous-contact':'Hay más de un contacto con ese nombre en Oracle.','contact-not-found':'Oracle no encontró el contacto indicado.',duplicate:'Oracle muestra más de una oportunidad con ese nombre.',layout:'No se reconoció el formulario de Oracle.',validation:'Oracle no aceptó los datos del formulario.',permission:'Tu usuario no puede crear este registro en Oracle.','write-not-started':'No se llegó a guardar en Oracle.',session:'La sesión terminó.',uncertain:'Se pulsó guardar pero no se pudo identificar el registro; revisa en Oracle antes de reintentar.',unavailable:'No se pudo determinar el resultado.'};
+    return `<section class="table-panel creations-panel"><div class="table-toolbar"><h2>Oportunidades creadas desde el portal</h2></div><div class="table-wrap"><table><thead><tr><th>NOMBRE</th><th>CONTACTO</th><th>CIERRE</th><th>ESTADO</th><th>NÚMERO EN ORACLE</th><th>ACCIÓN</th></tr></thead><tbody>${creations.map(c=>{const p=c.payload||{},contact=p.contact?.mode==='new'?`${p.contact.first_name} ${p.contact.last_name} (nuevo${c.contact_created?', creado':''})`:p.contact?.mode==='existing'?p.contact.name:'—';return `<tr><td>${esc(p.name)}</td><td>${esc(contact)}</td><td>${esc(p.close_date)}</td><td>${badge(titles[c.state]||c.state,c.state==='confirmed'?'green':['uncertain','failed'].includes(c.state)?'orange':'gray')}<span class="record-id">${esc(reasons[c.result_code]||'')}</span></td><td>${c.opportunity_number?`<button class="row-action" data-detail="${esc(c.opportunity_number)}" data-module="general">${esc(c.opportunity_number)}</button>`:'—'}</td><td>${state.can_propose&&c.state==='failed'?`<button class="tiny-button" data-retry-creation="${esc(c.id)}">Reintentar</button>`:''}${state.can_propose&&['pending_validation','failed'].includes(c.state)?`<button class="tiny-button" data-cancel-creation="${esc(c.id)}">Cancelar</button>`:''}</td></tr>`;}).join('')}</tbody></table></div></section>`;
+  }
+  /** New opportunity: saved in Oracle with the user's session, then mirrored and read back. */
+  function openCreate() {
+    let dialog=document.querySelector('#op-create-dialog');
+    if(!dialog){dialog=document.createElement('dialog');dialog.id='op-create-dialog';document.body.append(dialog);}
+    const extras=['cycle','test_call','test_date','test_type','origin','owner'].filter(k=>catalog.edit_fields.includes(k));
+    const contactNames=[...new Set(state.records.map(r=>r.contact_name||[r.first_name,r.last_name].filter(Boolean).join(' ')).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'es')).slice(0,1500);
+    const extraInput=key=>{const kind=catalog.edit_kinds?.[key];if(kind==='date')return `<input name="x-${key}" type="date">`;return `<input name="x-${key}" list="cdl-${key}" placeholder="Valor exacto de Oracle"><datalist id="cdl-${key}">${observedValues(key).map(v=>`<option value="${esc(v)}">`).join('')}</datalist>`;};
+    dialog.innerHTML=`<form id="op-create-form" method="dialog"><div class="dialog-head"><div><span class="eyebrow">NUEVA OPORTUNIDAD · SE CREA EN ORACLE</span><h2>Registrar aspirante</h2></div><button type="button" class="icon-button" data-close aria-label="Cerrar">×</button></div>
+      <div class="fields">
+        <label class="full">Nombre de la oportunidad *<input name="name" required maxlength="240" placeholder="Ej. Nombre Apellido · Ingeniería 2027"><small>Debe ser único: así se identifica el registro en Oracle después de guardarlo.</small></label>
+        <label>Fecha de cierre *<input name="close_date" type="date" required min="2026-01-01" max="2026-12-31"></label>
+        <label>Etapa de ventas<select name="stage">${STAGES.map(s=>`<option>${s}</option>`).join('')}</select></label>
+        <label>Probabilidad de ganar (%)<input name="probability" inputmode="decimal" placeholder="Opcional"></label>
+        <fieldset class="full create-contact"><legend>Contacto principal</legend>
+          <label class="inline-choice"><input type="radio" name="contact_mode" value="new" checked> Aspirante nuevo (se crea el contacto)</label>
+          <label class="inline-choice"><input type="radio" name="contact_mode" value="existing"> Contacto que ya existe en Oracle</label>
+          <label class="inline-choice"><input type="radio" name="contact_mode" value="none"> Sin contacto por ahora</label>
+          <div class="fields" data-contact="new"><label>Nombre *<input name="first_name" maxlength="150"></label><label>Apellidos *<input name="last_name" maxlength="150"></label><label>Correo electrónico<input name="email" type="email" maxlength="300"></label><label>Teléfono móvil<input name="phone" maxlength="40"></label></div>
+          <div class="fields" data-contact="existing" hidden><label class="full">Nombre completo del contacto<input name="contact_name" list="create-contacts" maxlength="240"><datalist id="create-contacts">${contactNames.map(n=>`<option value="${esc(n)}">`).join('')}</datalist><small>Debe coincidir exactamente con un solo contacto de Oracle.</small></label></div>
+        </fieldset>
+        ${extras.length?`<details class="full create-extra"><summary>Datos de admisión (opcional)</summary><div class="fields">${extras.map(k=>`<label>${esc(fieldLabel(k))}${extraInput(k)}</label>`).join('')}</div><small>Se guardan en Oracle como cambios verificados justo después de crear la oportunidad.</small></details>`:''}
+      </div>
+      <p class="error" id="create-error" role="alert"></p>
+      <div class="dialog-actions"><span class="subtle">Se registra con tu usuario de Oracle y se confirma al encontrarlo de nuevo en Oracle.</span><button type="button" data-close>Cancelar</button><button class="primary" type="submit">Crear en Oracle</button></div></form>`;
+    const form=dialog.querySelector('form');
+    const syncMode=()=>{const mode=form.elements.contact_mode.value;dialog.querySelectorAll('[data-contact]').forEach(d=>d.hidden=d.dataset.contact!==mode);form.elements.first_name.required=form.elements.last_name.required=mode==='new';form.elements.contact_name.required=mode==='existing';};
+    form.querySelectorAll('[name=contact_mode]').forEach(r=>r.onchange=syncMode);syncMode();
+    dialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dialog.close());
+    form.onsubmit=async event=>{
+      event.preventDefault();const submit=form.querySelector('button[type=submit]');if(submit.disabled)return;submit.disabled=true;
+      const f=form.elements,mode=f.contact_mode.value;
+      const contact=mode==='new'?{mode,first_name:f.first_name.value,last_name:f.last_name.value,email:f.email.value,phone:f.phone.value}:mode==='existing'?{mode,name:f.contact_name.value}:{mode};
+      const extra=Object.fromEntries(extras.map(k=>[k,f['x-'+k].value.trim()]).filter(([,v])=>v));
+      try{
+        await request('/api/oracle/opportunities',{name:f.name.value,close_date:f.close_date.value,stage:f.stage.value,probability:f.probability.value,contact,extra});
+        dialog.close();await refresh();view='changes';error='Creación en cola. Se registrará en Oracle con tu sesión; el número aparecerá en «Cambios en Oracle» al confirmarse.';draw();
+      }catch(e){dialog.querySelector('#create-error').textContent=e.message;submit.disabled=false;}
+    };
+    dialog.showModal();form.elements.name.focus();
   }
   function syncView() {
     const config=state.settings;
@@ -315,8 +380,8 @@ window.UnisOracleLive = (() => {
   }
   setInterval(async()=>{
     if(!window.HubAuth.isAuthenticated()||!root||!document.querySelector('[data-mode="live"].active')||inline||document.querySelector('#local-activity-form[open]'))return;
-    try {const signature=JSON.stringify([state?.loaded_at,state?.detail_count,state?.extraction,state?.job,state?.worker_online,state?.records.map(r=>[r.opportunity_number,r._version]),Object.values(state?.details||{}).map(d=>d.loaded_at),activities,changes]);await refresh();
-      if(signature!==JSON.stringify([state.loaded_at,state.detail_count,state.extraction,state.job,state.worker_online,state.records.map(r=>[r.opportunity_number,r._version]),Object.values(state.details||{}).map(d=>d.loaded_at),activities,changes])){draw();if(selected&&ensureDrawer().open&&!drawerEdit)drawDetail();}}
+    try {const signature=()=>JSON.stringify([state?.revision,state?.loaded_at,state?.detail_count,state?.extraction,state?.job,state?.worker_online,state?.unconfirmed,activities,changes,creations]);const before=signature();await refresh();
+      if(before!==signature()){draw();if(selected&&ensureDrawer().open&&!drawerEdit)drawDetail();}}
     catch { /* Retain the last successful view during brief local outages. */ }
   },3000);
   // Outside the Admisiones view the full workspace is not polled; a light status call

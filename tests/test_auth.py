@@ -41,6 +41,16 @@ class SessionTests(unittest.TestCase):
         a.clock=lambda:2000+901
         with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
         self.assertNotIn('synthetic-token',a.sessions)
+    def test_first_load_outlives_the_normal_session_limit(self):
+        from app.auth import MAX_AGE_SECONDS,SYNC_MAX_SECONDS
+        a=self.auth();s=a.sessions['synthetic-token'];s['created']=0;s['checked']=10**9
+        s['store'].job={'kind':'details_batch','state':'running','id':'synthetic-job'}
+        a.clock=lambda:MAX_AGE_SECONDS+3600
+        self.assertIs(a.resolve('hub_session=synthetic-token'),s)
+        s['store'].job['state']='completed'
+        with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
+        a.sessions['synthetic-token']=s;s['store'].job['state']='running';a.clock=lambda:SYNC_MAX_SECONDS+1
+        with self.assertRaises(AuthError):a.resolve('hub_session=synthetic-token')
     def test_sweep_keeps_syncing_sessions_even_without_an_open_tab(self):
         a=self.auth();s=a.sessions['synthetic-token']
         s['store'].job={'kind':'details_batch','state':'running','id':'synthetic-job'}
@@ -64,14 +74,17 @@ class SessionTests(unittest.TestCase):
     def test_login_resumes_incomplete_inventory_even_when_some_grants_are_cached(self):
         from types import SimpleNamespace
         from unittest.mock import patch
-        for complete in (False,True):
+        # Incomplete inventory → inventory; complete with missing details → details; complete → nothing;
+        # rows shown from the last copy → inventory to re-confirm them.
+        for complete,pending,expected,stale in ((False,False,'opportunities',0),(True,True,'details_batch',0),(True,False,None,0),(True,True,'opportunities',5)):
             a=self.auth();a.attempts={};a.dsn='synthetic-dsn';a.role='reader';a.read_lanes=2;a.execute=Mock()
             a.rpc.return_value={'principal':'synthetic-user','id':'synthetic-worker','display':'Persona ficticia'}
-            store=SimpleNamespace(records=[{'opportunity_number':'SYNTHETIC-001'}],listing_coverage={'complete':complete},heartbeat=Mock(),request=Mock())
+            store=SimpleNamespace(records=[{'opportunity_number':'SYNTHETIC-001'}],listing_coverage={'complete':complete},heartbeat=Mock(),request=Mock(),pending_details=Mock(return_value=pending),unconfirmed=Mock(return_value=stale))
             with patch('app.auth.ScopedRepository'),patch('app.auth.OracleReadStore',return_value=store):
                 body={'username':'synthetic-user','password':'synthetic-only'};a.login(body)
                 self.assertEqual(body,{})
-            self.assertEqual(a.execute.call_count,0 if complete else 1)
+            self.assertEqual(a.execute.call_count,0 if expected is None else 1)
+            if expected:store.request.assert_called_once_with(expected)
 
     def test_inventory_retries_only_transient_read_failures(self):
         from types import SimpleNamespace
@@ -86,6 +99,18 @@ class SessionTests(unittest.TestCase):
             a.session_rpc=Mock(side_effect=AuthError(code))
             with patch('app.oracle_scope.inventory',side_effect=invoke),patch('app.auth.sleep'),self.assertRaises(AuthError):a.refresh_listing(session)
             self.assertEqual(a.session_rpc.call_count,calls)
+
+    def test_verified_inventory_continues_into_missing_details(self):
+        from types import SimpleNamespace
+        from app.oracle_read import OracleReadStore
+        a=self.auth();session=a.sessions['synthetic-token'];store=OracleReadStore();session['store']=store
+        store.ingest({'records':[{'opportunity_number':'SYNTHETIC-001'}],'scope':'Synthetic','partial':True})
+        submitted=[];a.pool=SimpleNamespace(submit=lambda fn,*args:submitted.append((fn,args)))
+        a.refresh_listing=Mock(return_value={'complete':True,'row_count':1})
+        store.request('opportunities');a.execute(session)
+        run,args=submitted.pop(0);run(*args)
+        self.assertEqual(store.job['kind'],'details_batch');self.assertEqual(store.job['state'],'pending')
+        self.assertEqual(submitted[0],(a.execute,(session,)))
 
     def test_logout_is_server_side_revocation(self):
         a=self.auth();a.logout('hub_session=synthetic-token');self.assertFalse(a.sessions);a.rpc.assert_called_once_with('/logout',{'id':'fake'})
@@ -137,6 +162,33 @@ class WriteQueueTests(unittest.TestCase):
         a.submit_write(s,'synthetic-change')
         r.confirm_write.assert_called_once();self.assertEqual(a.session_rpc.call_args.args[1]['kind'],'write')
 
+    def creation_setup(self,rpc=None,state='pending_validation',contact_created=False):
+        a,s,r=self.setup_auth()
+        payload={'name':'Oportunidad ficticia nueva','close_date':'2026-12-01','stage':'01 - Interesado','probability':'','contact':{'mode':'new','first_name':'Ana','last_name':'Ficticia','email':'','phone':''},'extra':{'test_call':'Enero 2027'}}
+        r.creations.return_value=[{'id':'synthetic-create','payload':payload,'state':state,'contact_created':contact_created}]
+        s['store'].ingest_created=Mock(return_value={'opportunity_number':'SYN-NEW','_version':1})
+        s['store'].records=[{'opportunity_number':'SYN-NEW','_version':1}]
+        s['store'].propose=Mock(return_value={'id':'follow-up'})
+        a.submit_write=Mock()
+        if isinstance(rpc,Exception):a.session_rpc=Mock(side_effect=rpc)
+        else:a.session_rpc=Mock(return_value=rpc or {'created':True,'opportunity_number':'SYN-NEW','row':{'opportunity_number':'SYN-NEW','name':'Oportunidad ficticia nueva'},'detail':None,'contact_created':True})
+        return a,s,r
+    def test_created_opportunity_is_mirrored_and_follow_up_fields_are_queued(self):
+        a,s,r=self.creation_setup();a.submit_create(s,'synthetic-create')
+        self.assertEqual(a.session_rpc.call_args.args[1]['kind'],'create')
+        s['store'].ingest_created.assert_called_once()
+        r.creation_state.assert_called_with('synthetic-create','synthetic-user','confirmed',number='SYN-NEW',contact_created=True)
+        s['store'].propose.assert_called_once();a.submit_write.assert_called_once_with(s,'follow-up')
+    def test_failed_creation_remembers_a_created_contact_and_can_be_retried(self):
+        a,s,r=self.creation_setup(AuthError('contact-created'));a.submit_create(s,'synthetic-create')
+        r.creation_state.assert_called_with('synthetic-create','synthetic-user','failed','write-not-started',contact_created=True)
+        a,s,r=self.creation_setup(state='failed',contact_created=True);a.submit_create(s,'synthetic-create',retry=True)
+        self.assertTrue(a.session_rpc.call_args.args[1]['request']['contact_created'])
+    def test_unknown_outcome_after_save_is_uncertain_not_retried(self):
+        a,s,r=self.creation_setup(AuthError('uncertain'));a.submit_create(s,'synthetic-create')
+        r.creation_state.assert_called_with('synthetic-create','synthetic-user','uncertain','uncertain',contact_created=False)
+        with self.assertRaises(PermissionError):a.submit_create(s,'synthetic-create',retry=True)
+
 class AuthHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):test_lab.HttpTests.setUpClass.__func__(cls)
@@ -151,13 +203,13 @@ class AuthHttpTests(unittest.TestCase):
             with self.subTest(path=path):self.assertEqual(self.request(path)[0],401)
     def test_workspace_authenticates_and_reloads_the_scoped_model_once(self):
         store=OracleReadStore();store.ingest({'records':[{'opportunity_number':'SYNTHETIC-001'}],'scope':'Synthetic','partial':True})
-        store._reload=Mock();server.AUTH.resolve.side_effect=None
+        store.refresh_if_changed=Mock();server.AUTH.resolve.side_effect=None
         server.AUTH.resolve.return_value={'store':store,'principal':'synthetic-user'}
         code,body,_=self.request('/api/oracle/workspace')
         data=json.loads(body);self.assertEqual(code,200)
         self.assertEqual(data['snapshot']['records'][0]['opportunity_number'],'SYNTHETIC-001')
         self.assertEqual(data['changes'],[]);self.assertEqual(data['activities'],[])
-        self.assertIn('appointments',data['schemas']);store._reload.assert_called_once()
+        self.assertIn('appointments',data['schemas']);store.refresh_if_changed.assert_called_once()
 
     def test_no_origin_or_cross_origin_cannot_login(self):
         self.assertEqual(self.request('/api/auth/login','POST',{})[0],403)

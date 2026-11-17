@@ -1,4 +1,6 @@
-/** Fields the screen writer may change, by their label in the opportunity "Resumen" panel.
+/** Fields the screen writer may change, by their visible label: the opportunity "Resumen"
+ * panel (section "summary") or the profile of the linked primary contact (section "contact",
+ * labels compared without accents or case, like contact-reader.mjs).
  * Keep in sync with EDIT_KINDS in app/catalog.py (a test compares both). The hub decides
  * which of them are enabled; Oracle decides per record and per user. */
 export const EDIT_FIELDS={
@@ -7,6 +9,7 @@ export const EDIT_FIELDS={
   probability:{label:'Probabilidad de ganar (%)',kind:'number'},
   close_date:{label:'Fecha de cierre',kind:'date'},
   amount:{label:'Importe',kind:'number'},
+  owner:{label:'Responsable',kind:'choice'},
   cycle:{label:'Ciclo de Ingreso',kind:'choice'},
   year:{label:'Año',kind:'choice'},
   admission_status:{label:'Estado Proceso Admision',kind:'choice'},
@@ -35,5 +38,26 @@ export const EDIT_FIELDS={
   global_score:{label:'Puntaje Global',kind:'number'},
   paa_score:{label:'Puntaje PAA',kind:'number'},
   grade_average:{label:'Promedio',kind:'number'},
-  required_score:{label:'Puntaje Requerido',kind:'number'}
+  required_score:{label:'Puntaje Requerido',kind:'number'},
+  contact_first_name:{label:'nombre',kind:'text',section:'contact'},
+  contact_middle_name:{label:'segundo nombre',kind:'text',section:'contact'},
+  contact_last_name:{label:'apellidos',kind:'text',section:'contact'},
+  contact_second_last_name:{label:'segundo apellido',kind:'text',section:'contact'},
+  birth_date:{label:'fecha de nacimiento',kind:'date',section:'contact'},
+  document_id:{label:'numero del documento de identidad',kind:'text',section:'contact'},
+  contact_email:{label:'correo electronico',kind:'email',section:'contact'},
+  contact_phone:{label:'telefono movil',kind:'text',section:'contact'},
+  career:{label:'carrera de interes',kind:'choice',section:'contact'},
+  faculty:{label:'facultad',kind:'choice',section:'contact'},
+  lead_status:{label:'estatus lead',kind:'choice',section:'contact'},
+  test_month:{label:'mes de prueba',kind:'choice',section:'contact'},
+  contact_test_type:{label:'tipo de prueba',kind:'choice',section:'contact'},
+  hoodie_size:{label:'talla sudadero',kind:'choice',section:'contact'},
+  document_status:{label:'estatus papeleria',kind:'choice',section:'contact'},
+  financial_interest:{label:'interes asistencia economica',kind:'choice',section:'contact'},
+  graduation_school_year:{label:'ano de graduacion colegio',kind:'choice',section:'contact'},
+  homeschool:{label:'homeschool',kind:'boolean',section:'contact'},
+  campus_id:{label:'id campus',kind:'text',section:'contact'},
+  scala_id:{label:'id scala',kind:'text',section:'contact'},
+  campus_status:{label:'estado en campus',kind:'choice',section:'contact'}
 };

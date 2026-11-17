@@ -103,6 +103,7 @@ class PostgresRepository:
 
     def save_detail(self,number,detail):
         from psycopg.types.json import Jsonb
+        detail={k:v for k,v in detail.items() if k!='partial_read'}
         with self.connect() as c:
             if not c.execute('SELECT 1 FROM opportunities WHERE opportunity_number=%s',(number,)).fetchone():raise KeyError(number)
             c.execute('''INSERT INTO record_details(opportunity_number,payload) VALUES(%s,%s)
@@ -169,7 +170,7 @@ class PostgresRepository:
                 c.execute('UPDATE opportunities SET last_write_verified_at=now() WHERE opportunity_number=%s',(request['opportunity_number'],))
             c.execute("UPDATE change_requests SET state='confirmed',result_code=NULL,oracle_verified_at=now(),updated_at=now() WHERE id=%s",(identifier,))
             c.execute('INSERT INTO audit_events(actor,action,opportunity_number,metadata) VALUES(%s,%s,%s,%s)',(actor,'oracle_write_verified',request['opportunity_number'],Jsonb({'request_id':identifier,'field':request['field']})))
-        self.save_detail(request['opportunity_number'],detail)
+        self.save_detail(request['opportunity_number'],dict(detail,partial_read=True))
 
     def local_activities(self):
         with self.connect() as c:
@@ -203,6 +204,46 @@ class PostgresRepository:
     def save_setting(self,key,value):
         from psycopg.types.json import Jsonb
         with self.connect() as c:c.execute('INSERT INTO settings(key,value) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(key,Jsonb(value)))
+
+    def fingerprint(self):
+        """Cheap marker of the shared copy: changes whenever another session writes to it."""
+        with self.connect() as c:
+            row=c.execute("""SELECT (SELECT coalesce(max(last_seen)::text,'')||':'||count(*)||':'||coalesce(sum(version),0) FROM opportunities) AS o,
+                (SELECT coalesce(max(loaded_at)::text,'')||':'||count(*) FROM record_details) AS d""").fetchone()
+        return (row['o'],row['d'])
+
+    def propose_creation(self,payload,actor):
+        from psycopg.types.json import Jsonb
+        identifier=str(uuid4())
+        with self.connect() as c:
+            if c.execute("SELECT 1 FROM opportunity_creations WHERE actor=%s AND lower(payload->>'name')=lower(%s) AND state IN ('pending_validation','queued','applying','uncertain')",(actor,payload['name'])).fetchone():
+                raise ConflictError('Ya hay una creación en curso con ese nombre.')
+            c.execute('INSERT INTO opportunity_creations(id,actor,payload) VALUES(%s,%s,%s)',(identifier,actor,Jsonb(payload)))
+            c.execute('INSERT INTO audit_events(actor,action,metadata) VALUES(%s,%s,%s)',(actor,'create_opportunity_requested',Jsonb({'request_id':identifier,'name':payload['name']})))
+        return {'id':identifier,'state':'pending_validation','message':'Solicitud de creación guardada. Oracle todavía no se ha modificado.'}
+
+    def creations(self,actor=None):
+        with self.connect() as c:
+            rows=c.execute('SELECT * FROM opportunity_creations WHERE (%s::text IS NULL OR actor=%s) ORDER BY created_at DESC LIMIT 100',(actor,actor)).fetchall()
+        for r in rows:
+            for key in ('created_at','updated_at','oracle_verified_at'):r[key]=r[key].isoformat() if r[key] else None
+        return rows
+
+    def creation_state(self,identifier,actor,state,code=None,number=None,contact_created=None):
+        from psycopg.types.json import Jsonb
+        with self.connect() as c:
+            c.execute("""UPDATE opportunity_creations SET state=%s,result_code=%s,opportunity_number=coalesce(%s,opportunity_number),
+                contact_created=coalesce(%s,contact_created),updated_at=now(),
+                oracle_verified_at=CASE WHEN %s='confirmed' THEN now() ELSE oracle_verified_at END WHERE id=%s AND actor=%s""",
+                (state,code,number,contact_created,state,identifier,actor))
+            if state=='confirmed':
+                c.execute('INSERT INTO audit_events(actor,action,opportunity_number,metadata) VALUES(%s,%s,%s,%s)',(actor,'oracle_create_verified',number,Jsonb({'request_id':identifier})))
+
+    def cancel_creation(self,identifier,actor):
+        with self.connect() as c:
+            row=c.execute("UPDATE opportunity_creations SET state='cancelled',updated_at=now() WHERE id=%s AND actor=%s AND state IN ('pending_validation','failed') RETURNING id",(identifier,actor)).fetchone()
+        if not row:raise ConflictError('La solicitud no puede cancelarse en su estado actual.')
+        return {'state':'cancelled'}
 
     def trace_activity(self,numbers,days=30):
         """Observed Oracle versions and portal actions per day, limited to visible records."""

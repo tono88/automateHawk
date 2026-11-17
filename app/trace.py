@@ -65,6 +65,7 @@ def compact_rows(snapshot):
             test_date=test_date.isoformat() if test_date else '',
             last_seen=record.get('_last_seen') or '',
             amount=get('amount'),
+            unconfirmed=bool(record.get('_unconfirmed')),
         )
         rows.append(row)
     return rows
@@ -139,6 +140,7 @@ def dashboard(snapshot, changes, activity=None):
             'opportunities': len(rows),
             'with_detail': with_detail,
             'owners': len({r['owner'] for r in rows if r['owner']}),
+            'unconfirmed': sum(r['unconfirmed'] for r in rows),
             'changes_confirmed': change_states.get('confirmed', 0),
             'changes_open': sum(n for s, n in change_states.items() if s in ('pending_validation', 'queued', 'applying', 'uncertain', 'conflict')),
         },
